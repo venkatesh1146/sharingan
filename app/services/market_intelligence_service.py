@@ -10,12 +10,14 @@ This service consolidates all data fetching operations:
 
 from datetime import datetime, timedelta, time
 from typing import Any, Callable, Dict, List, Optional
-import hashlib
+import asyncio
+import json
 import pytz
 
 from app.config import get_settings
-from app.services.cmots_news_service import fetch_world_indices
+from app.services.cmots_news_service import MarketNewsService, fetch_world_indices, get_market_news_service
 from app.utils.logging import get_logger
+from app.agents.summary_generation_agent import SummaryGenerationAgent
 
 logger = get_logger(__name__)
 
@@ -49,113 +51,139 @@ INDEX_NAME_MAP = {
 # Primary indices for Indian market analysis
 INDIAN_PRIMARY_INDICES = ["NIFTY", "SENSEX", "GIFT NIFTY"]
 
-
-MOCK_NEWS = [
-    {
-        "id": "news_001",
-        "headline": "IT stocks rally as US tech earnings beat expectations",
-        "summary": "Indian IT stocks including TCS, Infosys, and Wipro surged after major US tech companies reported better-than-expected quarterly earnings, boosting sentiment for the sector.",
-        "source": "Economic Times",
-        "url": "https://example.com/news/001",
-        "published_at": (datetime.now(IST) - timedelta(hours=2)).isoformat(),
-        "sentiment": "bullish",
-        "sentiment_score": 0.75,
-        "mentioned_stocks": ["TCS", "INFY", "WIPRO"],
-        "mentioned_sectors": ["IT", "Technology"],
-        "is_breaking": False,
-    },
-    {
-        "id": "news_002",
-        "headline": "RBI maintains repo rate, signals accommodative stance",
-        "summary": "The Reserve Bank of India kept the repo rate unchanged at 6.5% and maintained an accommodative policy stance, providing relief to rate-sensitive sectors like banking and real estate.",
-        "source": "Mint",
-        "url": "https://example.com/news/002",
-        "published_at": (datetime.now(IST) - timedelta(hours=4)).isoformat(),
-        "sentiment": "bullish",
-        "sentiment_score": 0.65,
-        "mentioned_stocks": ["HDFC", "ICICI", "SBI", "DLF"],
-        "mentioned_sectors": ["Banking", "Finance", "Real Estate"],
-        "is_breaking": True,
-    },
-    {
-        "id": "news_003",
-        "headline": "Crude oil prices surge to $85 on OPEC+ supply concerns",
-        "summary": "Brent crude oil prices jumped to $85 per barrel amid concerns about OPEC+ production cuts, potentially impacting oil marketing companies and increasing input costs for paint and chemical manufacturers.",
-        "source": "Reuters",
-        "url": "https://example.com/news/003",
-        "published_at": (datetime.now(IST) - timedelta(hours=6)).isoformat(),
-        "sentiment": "bearish",
-        "sentiment_score": -0.55,
-        "mentioned_stocks": ["IOCL", "BPCL", "HINDPETRO", "ASIANPAINT"],
-        "mentioned_sectors": ["Oil & Gas", "Energy", "Paints"],
-        "is_breaking": False,
-    },
-    {
-        "id": "news_004",
-        "headline": "Auto sales hit record high in January, driven by SUV demand",
-        "summary": "Automobile manufacturers reported record sales in January 2026, led by strong SUV and EV demand. Maruti, Tata Motors, and M&M emerged as top performers.",
-        "source": "Business Standard",
-        "url": "https://example.com/news/004",
-        "published_at": (datetime.now(IST) - timedelta(hours=8)).isoformat(),
-        "sentiment": "bullish",
-        "sentiment_score": 0.70,
-        "mentioned_stocks": ["MARUTI", "TATAMOTORS", "M&M"],
-        "mentioned_sectors": ["Auto", "Consumer"],
-        "is_breaking": False,
-    },
-    {
-        "id": "news_005",
-        "headline": "FIIs turn net buyers after 5 months of selling",
-        "summary": "Foreign Institutional Investors (FIIs) turned net buyers in Indian markets, pumping in Rs 5,000 crore in the last week after five consecutive months of selling.",
-        "source": "Moneycontrol",
-        "url": "https://example.com/news/005",
-        "published_at": (datetime.now(IST) - timedelta(hours=3)).isoformat(),
-        "sentiment": "bullish",
-        "sentiment_score": 0.80,
-        "mentioned_stocks": [],
-        "mentioned_sectors": ["Market"],
-        "is_breaking": True,
-    },
-    {
-        "id": "news_006",
-        "headline": "Pharma sector faces headwinds from US FDA observations",
-        "summary": "Several Indian pharmaceutical companies including Sun Pharma and Dr. Reddy's received warning letters from US FDA, raising concerns about their export revenue.",
-        "source": "Economic Times",
-        "url": "https://example.com/news/006",
-        "published_at": (datetime.now(IST) - timedelta(hours=10)).isoformat(),
-        "sentiment": "bearish",
-        "sentiment_score": -0.60,
-        "mentioned_stocks": ["SUNPHARMA", "DRREDDY", "CIPLA"],
-        "mentioned_sectors": ["Pharma", "Healthcare"],
-        "is_breaking": False,
-    },
-    {
-        "id": "news_007",
-        "headline": "Steel prices rise 5% as China reduces production",
-        "summary": "Domestic steel prices increased by 5% following China's announcement to cut steel production, benefiting Indian steel manufacturers like Tata Steel and JSW Steel.",
-        "source": "Financial Express",
-        "url": "https://example.com/news/007",
-        "published_at": (datetime.now(IST) - timedelta(hours=5)).isoformat(),
-        "sentiment": "bullish",
-        "sentiment_score": 0.55,
-        "mentioned_stocks": ["TATASTEEL", "JSWSTEEL", "SAIL"],
-        "mentioned_sectors": ["Metals", "Steel"],
-        "is_breaking": False,
-    },
-    {
-        "id": "news_008",
-        "headline": "Government announces new PLI scheme for electronics manufacturing",
-        "summary": "The government unveiled a new Production Linked Incentive (PLI) scheme worth Rs 20,000 crore for electronics manufacturing, boosting companies like Dixon Technologies and Amber Enterprises.",
-        "source": "Hindu Business Line",
-        "url": "https://example.com/news/008",
-        "published_at": (datetime.now(IST) - timedelta(hours=7)).isoformat(),
-        "sentiment": "bullish",
-        "sentiment_score": 0.85,
-        "mentioned_stocks": ["DIXON", "AMBER"],
-        "mentioned_sectors": ["Electronics", "Manufacturing"],
-        "is_breaking": True,
-    },
+# Phase-specific indices to show in the response
+# Pre-market: Show global indices that trade before Indian markets open
+PRE_MARKET_INDICES = [
+    "GIFT NIFTY",   # GIFT Nifty (pre-market indicator)
+    "NIKKEI 225",   # Japan - Nikkei
+    "FTSE 100",     # UK - FTSE 100
+    "SHANGHAI COMPOSITE",  # China - Shanghai Composite
+    "DAX",          # Germany - DAX
 ]
+
+# Post-market: Show indices relevant after Indian markets close
+POST_MARKET_INDICES = [
+    "SENSEX",       # BSE Sensex (Indian)
+    "NIFTY",        # Nifty 50 (Indian)
+    "SHANGHAI COMPOSITE",  # China - Shanghai Composite
+    "NIKKEI 225",   # Japan - Nikkei
+    "FTSE 100",     # UK - FTSE 100
+    "DJIA",         # US - Dow Jones
+    "S&P 500",      # US - S&P 500
+]
+
+# Mid-market: Show Indian indices primarily
+MID_MARKET_INDICES = [
+    "SENSEX",       # BSE Sensex
+    "NIFTY",        # Nifty 50
+]
+
+
+# News type to sector mapping for categorization
+NEWS_TYPE_SECTOR_MAP = {
+    "Economy": ["Economy", "Macro", "Policy"],
+    "Other Markets": ["Commodities", "Forex", "Bullion"],
+    "Foreign Markets": ["Global Markets", "International"],
+}
+
+# Keywords for sentiment analysis from headlines/summary
+BULLISH_KEYWORDS = [
+    "rally", "surge", "jump", "gain", "rise", "climb", "advance", "bullish",
+    "positive", "growth", "record high", "outperform", "upgrade", "beat",
+    "strong", "robust", "optimism", "recovery", "boost", "expand",
+]
+
+BEARISH_KEYWORDS = [
+    "fall", "drop", "decline", "slump", "plunge", "crash", "bearish",
+    "negative", "loss", "concern", "fear", "warning", "downgrade", "miss",
+    "weak", "slowdown", "pessimism", "retreat", "contract", "cut",
+]
+
+# Maximum words for news summary
+MAX_SUMMARY_WORDS = 100
+
+
+async def _summarize_news_batch(news_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Summarize news item summaries using the SummaryGenerationAgent to be concise (under 100 words).
+    
+    Delegates to the SummaryGenerationAgent for consistent summarization across the system.
+    
+    Args:
+        news_items: List of news items with 'summary' field
+    
+    Returns:
+        Same list with summaries condensed to under 100 words
+    """
+    if not news_items:
+        return news_items
+    
+    # Filter items that need summarization (over 100 words)
+    items_to_summarize = []
+    indices_to_summarize = []
+    
+    for i, item in enumerate(news_items):
+        summary = item.get("summary", "")
+        word_count = len(summary.split())
+        if word_count > MAX_SUMMARY_WORDS:
+            items_to_summarize.append({"id": item.get("id", str(i)), "summary": summary})
+            indices_to_summarize.append(i)
+    
+    if not items_to_summarize:
+        # All summaries are already concise
+        return news_items
+    
+    logger.info(
+        "summarizing_news_batch",
+        total_items=len(news_items),
+        items_to_summarize=len(items_to_summarize),
+    )
+    
+    try:
+        # Use SummaryGenerationAgent for summarization
+        agent = SummaryGenerationAgent()
+        summarized_items = await agent.summarize_news_batch(
+            news_items=items_to_summarize,
+            max_words=MAX_SUMMARY_WORDS,
+        )
+        
+        # Create a mapping of id to summarized text
+        summary_map = {item["id"]: item["summary"] for item in summarized_items}
+        
+        # Update the original news items with summarized content
+        for idx in indices_to_summarize:
+            item_id = news_items[idx].get("id", str(idx))
+            if item_id in summary_map:
+                news_items[idx]["summary"] = summary_map[item_id]
+        
+        logger.info(
+            "news_summarization_complete",
+            summarized_count=len(summarized_items),
+        )
+    
+    except json.JSONDecodeError as e:
+        logger.warning(
+            "news_summarization_json_error",
+            error=str(e),
+        )
+        # Fall back to simple truncation if LLM response is malformed
+        for idx in indices_to_summarize:
+            summary = news_items[idx].get("summary", "")
+            words = summary.split()[:MAX_SUMMARY_WORDS]
+            news_items[idx]["summary"] = " ".join(words) + "..." if len(summary.split()) > MAX_SUMMARY_WORDS else summary
+    
+    except Exception as e:
+        logger.warning(
+            "news_summarization_error",
+            error=str(e),
+        )
+        # Fall back to simple truncation on any error
+        for idx in indices_to_summarize:
+            summary = news_items[idx].get("summary", "")
+            words = summary.split()[:MAX_SUMMARY_WORDS]
+            news_items[idx]["summary"] = " ".join(words) + "..." if len(summary.split()) > MAX_SUMMARY_WORDS else summary
+    
+    return news_items
 
 
 # =============================================================================
@@ -447,33 +475,194 @@ async def calculate_index_momentum(
 # =============================================================================
 
 
+def _analyze_sentiment(headline: str, summary: str) -> tuple[str, float]:
+    """
+    Analyze sentiment from headline and summary text.
+    
+    Returns:
+        Tuple of (sentiment label, sentiment score)
+    """
+    text = f"{headline} {summary}".lower()
+    
+    bullish_count = sum(1 for keyword in BULLISH_KEYWORDS if keyword in text)
+    bearish_count = sum(1 for keyword in BEARISH_KEYWORDS if keyword in text)
+    
+    # Calculate sentiment score (-1 to 1)
+    total = bullish_count + bearish_count
+    if total == 0:
+        return "neutral", 0.0
+    
+    score = (bullish_count - bearish_count) / max(total, 1)
+    score = max(-1.0, min(1.0, score))  # Clamp to [-1, 1]
+    
+    if score > 0.2:
+        sentiment = "bullish"
+    elif score < -0.2:
+        sentiment = "bearish"
+    else:
+        sentiment = "neutral"
+    
+    return sentiment, round(score, 2)
+
+
+def _transform_news_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transform CMOTS API news item to internal format.
+    
+    Maps:
+        - sno -> id
+        - heading -> headline
+        - section_name -> source
+        - news_type -> mentioned_sectors (category)
+        - published_at -> published_at
+        - summary -> summary
+    
+    Args:
+        item: Raw news item from CMOTS API
+    
+    Returns:
+        Transformed news item in internal format
+    """
+    headline = item.get("heading", "")
+    summary = item.get("summary", "")
+    news_type = item.get("news_type", "")
+    
+    # Analyze sentiment
+    sentiment, sentiment_score = _analyze_sentiment(headline, summary)
+    
+    # Determine sectors based on news type
+    mentioned_sectors = NEWS_TYPE_SECTOR_MAP.get(news_type, [news_type]) if news_type else ["General"]
+    
+    # Check if breaking news (most recent 3 articles are considered breaking)
+    is_breaking = False  # Will be set later based on recency
+    
+    return {
+        "id": str(item.get("sno", "")),
+        "headline": headline,
+        "summary": summary,
+        "source": item.get("section_name", "Capital Market"),
+        "url": None,  # CMOTS API doesn't provide URLs
+        "published_at": item.get("published_at", datetime.now(IST).isoformat()),
+        "sentiment": sentiment,
+        "sentiment_score": sentiment_score,
+        "mentioned_stocks": [],  # Could be extracted from summary if needed
+        "mentioned_sectors": mentioned_sectors,
+        "relevance_score": 0.5 + (0.25 * abs(sentiment_score)),  # Higher score for stronger sentiment
+        "is_breaking": is_breaking,
+        # Additional fields from API
+        "news_type": news_type,
+        "caption": item.get("caption", ""),
+    }
+
+
 async def fetch_market_news(
     time_window_hours: int = 24,
     max_articles: int = 50,
     categories: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Fetch general market news articles.
+    Fetch general market news articles from CMOTS API.
+    
+    Fetches news from three sources:
+    - Economy News (economic reports, policy updates)
+    - Other Markets (commodities, forex, bullion)
+    - Foreign Markets (global market updates)
     
     Args:
         time_window_hours: How far back to fetch news (in hours)
         max_articles: Maximum number of articles to return
-        categories: Optional list of categories to filter
+        categories: Optional list of news types to filter:
+            - "economy-news": Economic and policy news
+            - "other-markets": Commodities, forex, bullion
+            - "foreign-markets": Global market updates
     
     Returns:
-        List of news article dictionaries
+        List of news article dictionaries with standardized format
     """
     cutoff_time = datetime.now(IST) - timedelta(hours=time_window_hours)
-
-    news = []
-    for article in MOCK_NEWS[:max_articles]:
-        pub_time = datetime.fromisoformat(article["published_at"])
-        if pub_time >= cutoff_time:
-            article_copy = article.copy()
-            article_copy["relevance_score"] = 0.5 + (0.5 * article.get("sentiment_score", 0))
-            news.append(article_copy)
-
-    return news
+    
+    # Map categories to news_type filter
+    news_type_filter = None
+    if categories and len(categories) == 1:
+        news_type_filter = categories[0]
+    
+    try:
+        # Fetch from CMOTS API
+        news_service = get_market_news_service()
+        api_response = await news_service.fetch_unified_market_news(
+            limit=max_articles,
+            page=1,
+            per_page=max_articles,
+            news_type=news_type_filter,
+        )
+        
+        logger.info(
+            "fetched_market_news",
+            total_items=api_response.get("pagination", {}).get("total_items", 0),
+            fetched_at=api_response.get("fetched_at"),
+        )
+        
+        # Collect all news items from all categories
+        all_news = []
+        data_by_type = api_response.get("data", {})
+        
+        for news_type_key, items in data_by_type.items():
+            # Filter by categories if provided
+            if categories and news_type_key not in categories:
+                continue
+            
+            for item in items:
+                transformed = _transform_news_item(item)
+                all_news.append(transformed)
+        
+        # Filter by time window
+        filtered_news = []
+        for article in all_news:
+            try:
+                pub_time_str = article.get("published_at", "")
+                if pub_time_str:
+                    pub_time = datetime.fromisoformat(pub_time_str.replace("Z", "+00:00"))
+                    # Make naive datetime for comparison if needed
+                    if pub_time.tzinfo is None:
+                        pub_time = IST.localize(pub_time)
+                    if pub_time >= cutoff_time:
+                        filtered_news.append(article)
+                else:
+                    # Include articles without timestamp
+                    filtered_news.append(article)
+            except (ValueError, TypeError) as e:
+                logger.warning("news_time_parse_error", error=str(e), article_id=article.get("id"))
+                filtered_news.append(article)  # Include anyway
+        
+        # Sort by published_at (most recent first)
+        filtered_news.sort(
+            key=lambda x: x.get("published_at", ""),
+            reverse=True,
+        )
+        
+        # Mark most recent 3 articles as breaking
+        for i, article in enumerate(filtered_news[:3]):
+            article["is_breaking"] = True
+        
+        # Limit to max_articles
+        result = filtered_news[:max_articles]
+        
+        # Summarize verbose summaries using LLM (under 100 words)
+        result = await _summarize_news_batch(result)
+        
+        logger.info(
+            "processed_market_news",
+            total_fetched=len(all_news),
+            after_time_filter=len(filtered_news),
+            returned=len(result),
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error("fetch_market_news_error", error=str(e))
+        # Return empty list on error
+        return []
 
 
 async def fetch_stock_specific_news(
@@ -482,7 +671,10 @@ async def fetch_stock_specific_news(
     max_articles: int = 20,
 ) -> List[Dict[str, Any]]:
     """
-    Fetch news specifically about given stocks.
+    Fetch news mentioning specific stocks.
+    
+    Searches through market news for articles that mention the given tickers
+    in their headline or summary.
     
     Args:
         tickers: List of stock tickers to search for
@@ -492,19 +684,41 @@ async def fetch_stock_specific_news(
     Returns:
         List of news articles mentioning the specified stocks
     """
-    tickers_set = set(t.upper() for t in tickers)
-    cutoff_time = datetime.now(IST) - timedelta(hours=time_window_hours)
-
+    if not tickers:
+        return []
+    
+    # Normalize tickers for search
+    tickers_upper = [t.upper() for t in tickers]
+    
+    # Fetch all market news first
+    all_news = await fetch_market_news(
+        time_window_hours=time_window_hours,
+        max_articles=100,  # Fetch more to search through
+    )
+    
     matching_news = []
-    for article in MOCK_NEWS:
-        mentioned = set(s.upper() for s in article.get("mentioned_stocks", []))
-        if mentioned & tickers_set:
-            pub_time = datetime.fromisoformat(article["published_at"])
-            if pub_time >= cutoff_time:
-                article_copy = article.copy()
-                article_copy["matched_tickers"] = list(mentioned & tickers_set)
-                matching_news.append(article_copy)
-
+    for article in all_news:
+        # Search for ticker mentions in headline and summary
+        text = f"{article.get('headline', '')} {article.get('summary', '')}".upper()
+        
+        matched_tickers = []
+        for ticker in tickers_upper:
+            # Look for ticker as whole word
+            if ticker in text:
+                matched_tickers.append(ticker)
+        
+        if matched_tickers:
+            article_copy = article.copy()
+            article_copy["matched_tickers"] = matched_tickers
+            article_copy["mentioned_stocks"] = matched_tickers
+            matching_news.append(article_copy)
+    
+    # Sort by relevance (number of matches) and recency
+    matching_news.sort(
+        key=lambda x: (len(x.get("matched_tickers", [])), x.get("published_at", "")),
+        reverse=True,
+    )
+    
     return matching_news[:max_articles]
 
 
@@ -514,25 +728,88 @@ async def cluster_news_by_topic(
     """
     Cluster news items into themes/topics.
     
+    Groups news by:
+    1. News type (Economy, Other Markets, Foreign Markets)
+    2. Primary sector from mentioned_sectors
+    
     Args:
         news_items: List of news articles to cluster
     
     Returns:
-        List of theme clusters
+        List of theme clusters with sentiment analysis
     """
+    # Group by news_type first, then by sector
+    type_groups: Dict[str, List[str]] = {}
     sector_groups: Dict[str, List[str]] = {}
     
     for article in news_items:
+        article_id = article.get("id", "")
+        
+        # Group by news type
+        news_type = article.get("news_type", "General")
+        if news_type:
+            if news_type not in type_groups:
+                type_groups[news_type] = []
+            type_groups[news_type].append(article_id)
+        
+        # Also group by mentioned sectors
         sectors = article.get("mentioned_sectors", ["General"])
         primary_sector = sectors[0] if sectors else "General"
         
         if primary_sector not in sector_groups:
             sector_groups[primary_sector] = []
-        sector_groups[primary_sector].append(article["id"])
+        sector_groups[primary_sector].append(article_id)
 
     themes = []
+    
+    # Create themes from news type groups
+    for news_type, news_ids in type_groups.items():
+        cluster_articles = [a for a in news_items if a.get("id") in news_ids]
+        if not cluster_articles:
+            continue
+            
+        avg_sentiment = sum(a.get("sentiment_score", 0) for a in cluster_articles) / len(cluster_articles)
+        
+        if avg_sentiment > 0.2:
+            sentiment = "bullish"
+        elif avg_sentiment < -0.2:
+            sentiment = "bearish"
+        else:
+            sentiment = "neutral"
+
+        mentioned_stocks = set()
+        for article in cluster_articles:
+            mentioned_stocks.update(article.get("mentioned_stocks", []))
+
+        # Generate descriptive theme name
+        theme_name = f"{news_type} News"
+        if news_type == "Economy":
+            theme_name = "Economic & Policy Updates"
+        elif news_type == "Other Markets":
+            theme_name = "Commodities & Forex"
+        elif news_type == "Foreign Markets":
+            theme_name = "Global Market Updates"
+
+        themes.append({
+            "theme_name": theme_name,
+            "news_ids": news_ids,
+            "confidence": min(0.7 + (0.05 * len(news_ids)), 0.95),
+            "mentioned_stocks": list(mentioned_stocks),
+            "sentiment": sentiment,
+            "avg_sentiment_score": round(avg_sentiment, 2),
+            "news_type": news_type,
+        })
+
+    # Add sector-based themes that aren't already covered
     for sector, news_ids in sector_groups.items():
-        cluster_articles = [a for a in news_items if a["id"] in news_ids]
+        # Skip if already covered by news_type themes
+        if sector in ["Economy", "Macro", "Policy", "Commodities", "Forex", "Bullion", "Global Markets", "International"]:
+            continue
+        
+        cluster_articles = [a for a in news_items if a.get("id") in news_ids]
+        if not cluster_articles:
+            continue
+            
         avg_sentiment = sum(a.get("sentiment_score", 0) for a in cluster_articles) / len(cluster_articles)
         
         if avg_sentiment > 0.2:
@@ -549,18 +826,69 @@ async def cluster_news_by_topic(
         themes.append({
             "theme_name": f"{sector} Update",
             "news_ids": news_ids,
-            "confidence": 0.7 + (0.1 * len(news_ids)),
+            "confidence": min(0.6 + (0.05 * len(news_ids)), 0.9),
             "mentioned_stocks": list(mentioned_stocks),
             "sentiment": sentiment,
             "avg_sentiment_score": round(avg_sentiment, 2),
         })
 
+    # Sort by number of news items (most populated themes first)
     return sorted(themes, key=lambda x: len(x["news_ids"]), reverse=True)
 
 
 # =============================================================================
 # Combined Service Function - Main Entry Point
 # =============================================================================
+
+
+def _get_phase_specific_indices(phase: str) -> List[str]:
+    """
+    Get the list of indices to show based on market phase.
+    
+    Args:
+        phase: Market phase ('pre', 'mid', 'post')
+    
+    Returns:
+        List of index tickers to include in response
+    """
+    if phase == "pre":
+        return PRE_MARKET_INDICES
+    elif phase == "post":
+        return POST_MARKET_INDICES
+    else:  # mid-market
+        return MID_MARKET_INDICES
+
+
+def _filter_indices_by_phase(
+    all_indices: Dict[str, Dict[str, Any]],
+    phase: str,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Filter indices data based on market phase.
+    
+    Args:
+        all_indices: Dictionary of all fetched indices
+        phase: Market phase ('pre', 'mid', 'post')
+    
+    Returns:
+        Filtered dictionary containing only phase-appropriate indices
+    """
+    phase_indices = _get_phase_specific_indices(phase)
+    
+    # Normalize phase indices for comparison
+    normalized_phase_indices = {idx.upper(): idx for idx in phase_indices}
+    
+    filtered = {}
+    for ticker, data in all_indices.items():
+        ticker_upper = ticker.upper()
+        # Check if this ticker should be included for this phase
+        if ticker_upper in normalized_phase_indices:
+            filtered[ticker] = data
+        # Also check by name match
+        elif data.get("name", "").upper() in normalized_phase_indices:
+            filtered[ticker] = data
+    
+    return filtered
 
 
 async def fetch_market_intelligence(
@@ -579,8 +907,13 @@ async def fetch_market_intelligence(
     - Stock-specific news (if watchlist provided)
     - News clustering
     
+    The indices returned are filtered based on market phase:
+    - Pre-market: GIFT NIFTY, Nikkei, FTSE 100, Shanghai Composite, DAX
+    - Post-market: SENSEX, NIFTY, Shanghai Composite, Nikkei, FTSE 100, DJIA, S&P 500
+    - Mid-market: SENSEX, NIFTY
+    
     Args:
-        indices: Optional list of index tickers to filter (None = all indices)
+        indices: Optional list of index tickers to filter (None = phase-based filtering)
         watchlist: Optional user watchlist for stock-specific news
         time_window_hours: News time window
         max_articles: Maximum news articles
@@ -588,14 +921,32 @@ async def fetch_market_intelligence(
     Returns:
         Combined market intelligence data
     """
-    # Fetch market phase
+    # Fetch market phase first (needed for phase-based index filtering)
     phase_data = await get_market_phase()
+    market_phase = phase_data["phase"]
     
-    # Fetch indices data (all world indices from API)
-    indices_data = await fetch_market_indices(indices)
+    # Fetch all indices data (from CMOTS World Indices API)
+    all_indices_data = await fetch_market_indices(indices)
     
-    # Calculate momentum
-    momentum_data = await calculate_index_momentum(indices_data)
+    # Filter indices based on market phase
+    # If specific indices were requested, use those; otherwise filter by phase
+    if indices:
+        # User requested specific indices, respect that
+        indices_data = all_indices_data
+    else:
+        # Apply phase-based filtering
+        indices_data = _filter_indices_by_phase(all_indices_data, market_phase)
+    
+    logger.info(
+        "indices_filtered_by_phase",
+        phase=market_phase,
+        total_fetched=len(all_indices_data),
+        phase_filtered=len(indices_data),
+        included_indices=list(indices_data.keys()),
+    )
+    
+    # Calculate momentum (use all data for accurate calculation)
+    momentum_data = await calculate_index_momentum(all_indices_data)
     
     # Fetch general market news
     news = await fetch_market_news(time_window_hours, max_articles)

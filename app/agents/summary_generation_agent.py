@@ -161,23 +161,15 @@ class SummaryGenerationAgent(BaseAgent[SummaryGenerationAgentInput, SummaryGener
             change = abs(input_data.market_outlook.nifty_change_percent)
             outlook_text = f"Markets trading {direction} by {change:.1f}%"
 
-        # Generate bullets based on top news and themes
+        # Track which themes have been used for bullets
         used_themes = set()
         
-        for nwi in sorted_news[:5]:  # Consider top 5 news
+        # First, try to generate bullets from news with stock impacts
+        for nwi in sorted_news[:5]:
             if len(bullets) >= input_data.max_bullets:
                 break
 
-            # Find which theme this news belongs to
-            theme_name = None
-            for theme in input_data.refined_themes:
-                if nwi.news_id in [n.id for n in theme.news_items]:
-                    if theme.theme_name not in used_themes:
-                        theme_name = theme.theme_name
-                        used_themes.add(theme_name)
-                    break
-
-            # Generate causal bullet
+            # Generate causal bullet (only works if there are impacted stocks)
             bullet_text = self._create_causal_bullet(
                 nwi,
                 input_data.indices_data,
@@ -197,6 +189,12 @@ class SummaryGenerationAgent(BaseAgent[SummaryGenerationAgentInput, SummaryGener
                         sentiment=sentiment,
                     )
                 )
+                
+                # Track theme as used if this news belongs to one
+                for theme in input_data.refined_themes:
+                    if nwi.news_id in [n.id for n in theme.news_items]:
+                        used_themes.add(theme.theme_name)
+                        break
 
         # If we don't have enough bullets, create from themes
         if len(bullets) < input_data.max_bullets:
@@ -208,12 +206,38 @@ class SummaryGenerationAgent(BaseAgent[SummaryGenerationAgentInput, SummaryGener
 
                 bullet_text = self._create_theme_bullet(theme, outlook_text)
                 if bullet_text and self._has_causal_language(bullet_text):
+                    used_themes.add(theme.theme_name)
                     bullets.append(
                         MarketSummaryBullet(
                             text=bullet_text,
                             supporting_news_ids=[n.id for n in theme.news_items[:2]],
                             confidence=0.75,
                             sentiment=theme.overall_sentiment,
+                        )
+                    )
+
+        # If still not enough bullets, create from top news headlines directly
+        if len(bullets) < input_data.max_bullets:
+            used_news_ids = set()
+            for bullet in bullets:
+                used_news_ids.update(bullet.supporting_news_ids)
+            
+            for nwi in sorted_news:
+                if len(bullets) >= input_data.max_bullets:
+                    break
+                if nwi.news_id in used_news_ids:
+                    continue
+                
+                # Create headline-based bullet
+                bullet_text = self._create_headline_bullet(nwi.news_item, outlook_text)
+                if bullet_text and self._has_causal_language(bullet_text):
+                    sentiment = nwi.news_item.sentiment if nwi.news_item.sentiment in ["bullish", "bearish"] else "neutral"
+                    bullets.append(
+                        MarketSummaryBullet(
+                            text=bullet_text,
+                            supporting_news_ids=[nwi.news_id],
+                            confidence=0.6,
+                            sentiment=sentiment,
                         )
                     )
 
@@ -279,6 +303,55 @@ class SummaryGenerationAgent(BaseAgent[SummaryGenerationAgentInput, SummaryGener
             f"{theme.theme_name} sector seeing {sentiment_desc} "
             f"on the back of recent news flow."
         )
+
+    def _create_headline_bullet(self, news: NewsItem, outlook_text: str) -> str:
+        """Create a bullet from news headline when no specific stock impacts exist."""
+        headline = news.headline
+        sentiment = news.sentiment
+        
+        # Determine sentiment descriptor and causal connector
+        if sentiment == "bullish":
+            sentiment_desc = "positive sentiment"
+            connectors = ["supported by", "driven by", "following"]
+        elif sentiment == "bearish":
+            sentiment_desc = "cautious sentiment"
+            connectors = ["amid", "following", "weighed by"]
+        else:
+            sentiment_desc = "mixed sentiment"
+            connectors = ["amid", "following", "as"]
+        
+        connector = connectors[0]
+        
+        # Extract key sectors from news
+        sectors = news.mentioned_sectors[:2] if news.mentioned_sectors else ["Market"]
+        sector_text = " and ".join(sectors)
+        
+        # Truncate headline for use in bullet
+        headline_short = headline[:60].rstrip()
+        if len(headline) > 60:
+            headline_short += "..."
+        
+        # Build different bullet formats based on sector type
+        if any(s in ["Economy", "Macro", "Policy"] for s in news.mentioned_sectors):
+            return (
+                f"Economic outlook shows {sentiment_desc} {connector} "
+                f"{headline_short.lower()}"
+            )
+        elif any(s in ["Global Markets", "International"] for s in news.mentioned_sectors):
+            return (
+                f"Global market cues suggest {sentiment_desc} {connector} "
+                f"{headline_short.lower()}"
+            )
+        elif any(s in ["Commodities", "Forex", "Bullion"] for s in news.mentioned_sectors):
+            return (
+                f"{sector_text} showing {sentiment_desc} {connector} "
+                f"{headline_short.lower()}"
+            )
+        else:
+            return (
+                f"Markets reflect {sentiment_desc} {connector} "
+                f"{headline_short.lower()}"
+            )
 
     def _has_causal_language(self, text: str) -> bool:
         """Check if text contains causal language."""
@@ -365,3 +438,87 @@ class SummaryGenerationAgent(BaseAgent[SummaryGenerationAgentInput, SummaryGener
                 takeaways.append(f"Watch {top} for near-term movement")
 
         return takeaways[:4]
+
+    async def summarize_news_batch(
+        self,
+        news_items: List[Dict],
+        max_words: int = 100,
+    ) -> List[Dict]:
+        """
+        Summarize news item summaries to be concise (under max_words).
+        
+        Processes news items in batch for efficiency, sending multiple summaries
+        to the LLM in a single call.
+        
+        Args:
+            news_items: List of news items with 'id' and 'summary' fields
+            max_words: Maximum words per summary (default 100)
+        
+        Returns:
+            List of dicts with 'id' and 'summary' fields containing condensed summaries
+        """
+        import json
+        
+        if not news_items:
+            return []
+        
+        self.logger.info(
+            "summarizing_news_batch",
+            items_count=len(news_items),
+            max_words=max_words,
+        )
+        
+        # Build the prompt for batch summarization
+        summaries_text = "\n\n".join([
+            f"[ID: {item['id']}]\n{item['summary']}"
+            for item in news_items
+        ])
+        
+        prompt = f"""Summarize each of the following news summaries to be under {max_words} words while preserving the key information and market relevance. Keep the tone factual and professional.
+
+Return your response as a JSON array where each object has "id" and "summary" fields.
+
+News summaries to condense:
+
+{summaries_text}
+
+Return ONLY the JSON array, no other text."""
+
+        try:
+            # Use the agent's client to generate content
+            response = await self.client.generate_content(prompt)
+            
+            if response:
+                # Parse the JSON response
+                response_text = response.strip()
+                # Handle markdown code blocks
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:]
+                if response_text.startswith("```"):
+                    response_text = response_text[3:]
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3]
+                
+                summarized_items = json.loads(response_text.strip())
+                
+                self.logger.info(
+                    "news_summarization_complete",
+                    summarized_count=len(summarized_items),
+                )
+                
+                return summarized_items
+        
+        except json.JSONDecodeError as e:
+            self.logger.warning(
+                "news_summarization_json_error",
+                error=str(e),
+            )
+            raise
+        except Exception as e:
+            self.logger.warning(
+                "news_summarization_error",
+                error=str(e),
+            )
+            raise
+        
+        return []

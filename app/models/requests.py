@@ -71,7 +71,7 @@ class MarketPulseRequest(BaseModel):
                 "include_watchlist": True,
                 "include_portfolio": True,
                 "news_filter": "all",
-                "max_news_items": 50,
+                "max_news_items": 10,
                 "max_themes": 5,
                 "include_portfolio_impact": True,
                 "time_window_hours": 24,

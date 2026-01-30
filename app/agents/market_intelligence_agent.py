@@ -165,22 +165,34 @@ class MarketIntelligenceAgent(BaseAgent[MarketIntelligenceAgentInput, MarketInte
         raw_news = intelligence_data["news"]
         news_items: List[NewsItem] = []
         for news in raw_news:
+            # Parse published_at safely
+            published_at = datetime.utcnow()
+            if isinstance(news.get("published_at"), str):
+                try:
+                    pub_str = news["published_at"].replace("Z", "+00:00")
+                    published_at = datetime.fromisoformat(pub_str)
+                except (ValueError, TypeError):
+                    published_at = datetime.utcnow()
+            
+            # Ensure sentiment is valid
+            sentiment = news.get("sentiment", "neutral")
+            if sentiment not in ["bullish", "bearish", "neutral"]:
+                sentiment = "neutral"
+            
             news_items.append(
                 NewsItem(
-                    id=news["id"],
-                    headline=news["headline"],
+                    id=str(news.get("id", "")),
+                    headline=news.get("headline", ""),
                     summary=news.get("summary", ""),
-                    source=news.get("source", "Unknown"),
-                    url=news.get("url"),
-                    published_at=datetime.fromisoformat(news["published_at"])
-                    if isinstance(news.get("published_at"), str)
-                    else datetime.utcnow(),
-                    sentiment=news.get("sentiment", "neutral"),
-                    sentiment_score=news.get("sentiment_score", 0.0),
+                    source=news.get("source", "Capital Market"),
+                    url=None,  # Always keep URL as null.  url=news.get("url"),
+                    published_at=published_at,
+                    sentiment=sentiment,
+                    sentiment_score=float(news.get("sentiment_score", 0.0)),
                     mentioned_stocks=news.get("mentioned_stocks", []),
                     mentioned_sectors=news.get("mentioned_sectors", []),
-                    relevance_score=news.get("relevance_score", 0.5),
-                    is_breaking=news.get("is_breaking", False),
+                    relevance_score=float(news.get("relevance_score", 0.5)),
+                    is_breaking=bool(news.get("is_breaking", False)),
                 )
             )
 

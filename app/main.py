@@ -29,7 +29,7 @@ from app.utils.logging import setup_logging, get_logger, bind_request_context
 from app.utils.tracing import setup_tracing
 from app.utils.exceptions import MarketPulseError, OrchestrationError
 from app.services.redis_service import get_redis_service
-from app.services.cmots_news_service import fetch_world_indices
+from app.services.cmots_news_service import fetch_world_indices, get_market_news_service
 
 
 # Initialize settings and logging

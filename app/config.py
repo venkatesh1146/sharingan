@@ -22,11 +22,11 @@ class Settings(BaseSettings):
 
     # Google AI Configuration
     GOOGLE_AI_API_KEY: str = ""
-    GEMINI_FAST_MODEL: str = "gemini-2.0-flash-exp"
+    GEMINI_FAST_MODEL: str = "gemini-2.0-flash"
     GEMINI_PRO_MODEL: str = "gemini-1.5-pro"
 
     # Agent Timeouts (seconds)
-    MARKET_DATA_AGENT_TIMEOUT: int = 10
+    MARKET_DATA_AGENT_TIMEOUT: int = 90  # Increased to accommodate LLM summarization
     NEWS_ANALYSIS_AGENT_TIMEOUT: int = 30
     USER_CONTEXT_AGENT_TIMEOUT: int = 15
     IMPACT_ANALYSIS_AGENT_TIMEOUT: int = 45

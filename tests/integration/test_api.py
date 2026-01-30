@@ -82,7 +82,7 @@ class TestPulseEndpoint:
             "include_watchlist": True,
             "include_portfolio": True,
             "news_filter": "all",
-            "max_news_items": 20,
+            "max_news_items": 10,
         }
 
     def test_pulse_requires_user_id(self, client):
