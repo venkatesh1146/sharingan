@@ -21,7 +21,7 @@ from app.constants.themes import (
 )
 from app.services.cmots_news_service import (
     fetch_world_indices,
-    get_market_news_service,
+    get_cmots_news_service,
 )
 from app.utils.logging import get_logger
 from app.agents.summary_generation_agent import SummaryGenerationAgent
@@ -595,7 +595,7 @@ async def fetch_market_news(
 
     try:
         # Fetch from CMOTS API
-        news_service = get_market_news_service()
+        news_service = get_cmots_news_service()
         api_response = await news_service.fetch_unified_market_news(
             limit=max_articles,
             page=1,
