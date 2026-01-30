@@ -59,7 +59,7 @@ class CompanyNewsService:
         """
         merged = dict(headers or {})
         if self.settings.CMOTS_TOKEN and "Authorization" not in merged:
-            merged["Authorization"] = self.settings.CMOTS_TOKEN
+            merged["Authorization"] = f'Bearer {self.settings.CMOTS_TOKEN}'
         return merged
 
     async def _call_proxy_api(

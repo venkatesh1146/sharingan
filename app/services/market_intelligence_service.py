@@ -26,7 +26,6 @@ from app.services.cmots_news_service import (
     get_cmots_news_service,
 )
 from app.utils.logging import get_logger
-from app.agents.summary_generation_agent import SummaryGenerationAgent
 
 logger = get_logger(__name__)
 
@@ -149,6 +148,10 @@ async def _summarize_news_batch(news_items: List[Dict[str, Any]]) -> List[Dict[s
     )
 
     try:
+        # Import here to avoid circular import
+        # (market_intelligence_service -> agents -> market_intelligence_agent -> market_intelligence_service)
+        from app.agents.summary_generation_agent import SummaryGenerationAgent
+        
         # Use SummaryGenerationAgent for summarization
         agent = SummaryGenerationAgent()
         summarized_items = await agent.summarize_news_batch(
@@ -488,10 +491,8 @@ def _extract_mentioned_tickers(text: str, candidate_tickers: List[str]) -> List[
     """
     Extract stock tickers mentioned in text using word-boundary matching.
 
-    - When watchlist is provided: candidate_tickers = watchlist → only watchlist
-      items that appear in the news are returned.
-    - When watchlist is not provided: candidate_tickers = COMMON_NSE_TICKERS →
-      stocks from the universe that are mentioned in the news.
+    Uses candidate_tickers (typically COMMON_NSE_TICKERS) to find stocks
+    from the universe that are mentioned in the news.
 
     Match is case-insensitive and uses word boundaries so "RELIANCE" matches
     in "Reliance Industries" but "RELI" does not match inside "RELIANCE".
@@ -500,7 +501,7 @@ def _extract_mentioned_tickers(text: str, candidate_tickers: List[str]) -> List[
 
     Args:
         text: Headline + summary (or any string to search).
-        candidate_tickers: List of tickers to look for (e.g. watchlist or universe).
+        candidate_tickers: List of tickers to look for (e.g. COMMON_NSE_TICKERS).
 
     Returns:
         List of tickers from candidate_tickers that appear in text (original case from candidate).
@@ -724,17 +725,17 @@ async def fetch_stock_specific_news(
     """
     Fetch news mentioning specific stocks.
 
-    Uses word-boundary matching so only watchlist tickers that actually appear
+    Uses word-boundary matching so only specified tickers that actually appear
     in headline/summary are included in mentioned_stocks.
 
     Args:
-        tickers: List of stock tickers (watchlist) to search for
+        tickers: List of stock tickers to search for
         time_window_hours: How far back to fetch news
         max_articles: Maximum articles to return
 
     Returns:
-        List of news articles that mention at least one watchlist ticker;
-        each article's mentioned_stocks = only watchlist items that are affected.
+        List of news articles that mention at least one specified ticker;
+        each article's mentioned_stocks = only tickers that are mentioned.
     """
     if not tickers:
         return []
@@ -1009,7 +1010,6 @@ async def fetch_phase_specific_news(
 
 async def fetch_market_intelligence(
     indices: Optional[List[str]] = None,
-    watchlist: Optional[List[str]] = None,
     time_window_hours: int = 24,
     max_articles: int = 50,
 ) -> Dict[str, Any]:
@@ -1020,7 +1020,6 @@ async def fetch_market_intelligence(
     - Market indices data (from CMOTS World Indices API)
     - Market phase
     - Market news
-    - Stock-specific news (if watchlist provided)
     - News clustering
 
     The indices returned are filtered based on market phase:
@@ -1030,7 +1029,6 @@ async def fetch_market_intelligence(
 
     Args:
         indices: Optional list of index tickers to filter (None = phase-based filtering)
-        watchlist: Optional user watchlist for stock-specific news
         time_window_hours: News time window
         max_articles: Maximum news articles
 
@@ -1074,27 +1072,10 @@ async def fetch_market_intelligence(
     # Fetch general market news
     general_news = await fetch_market_news(time_window_hours, max_articles)
 
-    # Combine phase-specific news with general news (phase news first)
-    # news = phase_news + general_news
-
-    # Fetch stock-specific news if watchlist provided
-    if watchlist:
-        stock_news = await fetch_stock_specific_news(
-            watchlist, time_window_hours, max_articles=20
-        )
-        # Merge without duplicates
-        existing_ids = {n["id"] for n in news}
-        for article in stock_news:
-            if article["id"] not in existing_ids:
-                news.append(article)
-
-    # Enrich mentioned_stocks for every article:
-    # - If watchlist provided: only watchlist tickers that appear in the news
-    # - If no watchlist: stocks from common universe that appear in the news
-    ticker_candidates = watchlist if watchlist else COMMON_NSE_TICKERS
+    # Enrich mentioned_stocks for every article using common NSE tickers
     for article in news:
         text = f"{article.get('headline', '')} {article.get('summary', '')}"
-        article["mentioned_stocks"] = _extract_mentioned_tickers(text, ticker_candidates)
+        article["mentioned_stocks"] = _extract_mentioned_tickers(text, COMMON_NSE_TICKERS)
 
     # Cluster news into themes
     themes = await cluster_news_by_topic(news)

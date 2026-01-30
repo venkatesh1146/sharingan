@@ -1,5 +1,5 @@
 """
-Common NSE tickers used to extract mentioned stocks from news when no watchlist is provided.
+Common NSE tickers used to extract mentioned stocks from news.
 
 Used for word-boundary matching in headline + summary to populate mentioned_stocks.
 Representative set of liquid / frequently mentioned names (Nifty 50 style + others).
@@ -7,7 +7,7 @@ Representative set of liquid / frequently mentioned names (Nifty 50 style + othe
 
 from typing import List
 
-# Common NSE symbols (uppercase) - used when watchlist is not provided.
+# Common NSE symbols (uppercase).
 # Sorted by length descending at match time so longer symbols match first
 # (e.g. RELIANCE before RELI). Extend as needed or load from CompanyMaster.
 COMMON_NSE_TICKERS: List[str] = [

@@ -1,11 +1,15 @@
 """
-Market Pulse Multi-Agent API (Simplified)
+Market Intelligence API
 
-FastAPI application providing AI-powered market insights using
-a simplified 3-agent orchestration system.
+FastAPI application providing AI-powered market insights through
+a background processing architecture with Celery tasks and MongoDB.
+
+Architecture:
+- GET /api/v1/market-summary reads pre-computed snapshots from MongoDB
+- Background Celery tasks handle AI processing (news analysis, snapshot generation)
+- 3 specialized agents: NewsProcessing, SnapshotGeneration, IndicesCollection
 """
 
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, List
@@ -15,19 +19,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.agents.base import AgentExecutionContext
-from app.agents.orchestrator import OrchestratorAgent
 from app.config import get_settings
-from app.models.requests import MarketPulseRequest
 from app.models.responses import (
-    MarketPulseResponse,
     HealthCheckResponse,
     AgentStatusResponse,
     ErrorResponse,
 )
-from app.utils.logging import setup_logging, get_logger, bind_request_context
+from app.utils.logging import setup_logging, get_logger
 from app.utils.tracing import setup_tracing
-from app.utils.exceptions import MarketPulseError, OrchestrationError
+from app.utils.exceptions import MarketPulseError
 from app.services.redis_service import get_redis_service
 from app.services.cmots_news_service import fetch_world_indices, get_cmots_news_service
 from app.services.company_news_service import get_company_news_service
@@ -37,8 +37,27 @@ from app.services.company_news_service import get_company_news_service
 settings = get_settings()
 logger = get_logger(__name__)
 
-# Global orchestrator instance
-orchestrator: Optional[OrchestratorAgent] = None
+
+async def _trigger_startup_tasks():
+    """Trigger initial data population tasks after a delay."""
+    import asyncio
+    await asyncio.sleep(5)  # Wait for Celery worker to be ready
+    
+    try:
+        from app.celery_app.tasks.news_tasks import fetch_and_process_news
+        from app.celery_app.tasks.snapshot_tasks import generate_market_snapshot
+        from app.celery_app.tasks.indices_tasks import fetch_indices_data
+        
+        logger.info("startup_triggering_initial_data_population")
+        
+        # Queue all initial tasks
+        fetch_and_process_news.delay(limit=20)
+        fetch_indices_data.delay()
+        generate_market_snapshot.delay(force=True)
+        
+        logger.info("startup_initial_data_tasks_queued")
+    except Exception as e:
+        logger.warning("startup_data_population_failed", error=str(e))
 
 
 @asynccontextmanager
@@ -48,16 +67,10 @@ async def lifespan(app: FastAPI):
 
     Handles startup and shutdown events.
     """
-    global orchestrator
-
     # Startup
     logger.info("application_starting", version=__version__)
     setup_logging(settings.LOG_LEVEL)
     setup_tracing()
-
-    # Initialize orchestrator
-    orchestrator = OrchestratorAgent()
-    logger.info("orchestrator_initialized")
 
     # Initialize Redis service
     try:
@@ -67,10 +80,32 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("redis_service_failed_to_initialize", error=str(e))
 
+    # Initialize MongoDB
+    try:
+        from app.db.mongodb import get_mongodb_client
+        mongo_client = get_mongodb_client()
+        await mongo_client.connect()
+        logger.info("mongodb_initialized")
+    except Exception as e:
+        logger.warning("mongodb_failed_to_initialize", error=str(e))
+
+    # Trigger initial data population in background
+    import asyncio
+    asyncio.create_task(_trigger_startup_tasks())
+
     yield
 
     # Shutdown
     logger.info("application_shutting_down")
+
+    # Close MongoDB connection
+    try:
+        from app.db.mongodb import get_mongodb_client
+        mongo_client = get_mongodb_client()
+        await mongo_client.disconnect()
+        logger.info("mongodb_closed")
+    except Exception as e:
+        logger.warning("mongodb_close_failed", error=str(e))
 
     # Close Redis connection
     try:
@@ -83,16 +118,17 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI application
 app = FastAPI(
-    title="Market Pulse Multi-Agent API",
+    title="Market Intelligence API",
     description="""
-    AI-powered market insights using simplified multi-agent orchestration.
+    AI-powered market intelligence through background processing architecture.
 
-    This API coordinates 3 specialized agents to generate comprehensive
-    market pulse analysis:
+    This API serves pre-computed market snapshots from MongoDB for fast responses.
+    Background Celery tasks handle heavy AI processing:
 
-    1. **Market Intelligence Agent** - Fetches indices, news, and determines market phase
-    2. **Portfolio Insight Agent** - Retrieves user context and analyzes news impact
-    3. **Summary Generation Agent** - Creates coherent market narrative
+    - **GET /api/v1/market-summary** - Returns cached market snapshot (< 200ms)
+    - **NewsProcessingAgent** - AI-powered news analysis (runs every 15 min)
+    - **SnapshotGenerationAgent** - AI market outlook generation (runs every 30 min)
+    - **IndicesCollectionAgent** - Indices data collection (runs every 5 min)
     """,
     version=__version__,
     lifespan=lifespan,
@@ -163,130 +199,27 @@ async def general_exception_handler(
 # =============================================================================
 
 
-@app.post(
-    "/api/v1/pulse",
-    response_model=MarketPulseResponse,
-    summary="Generate Market Pulse",
-    description="Generate comprehensive market pulse analysis using multi-agent orchestration.",
-    responses={
-        200: {"description": "Successfully generated market pulse"},
-        500: {"description": "Server error", "model": ErrorResponse},
-    },
-)
-async def generate_market_pulse(
-    request: MarketPulseRequest,
-    background_tasks: BackgroundTasks,
-) -> MarketPulseResponse:
-    """
-    Generate Market Pulse using simplified 3-agent orchestration.
-
-    This endpoint coordinates 3 specialized agents to generate:
-    - Market outlook and momentum analysis
-    - News with impact analysis
-    - Portfolio-specific insights
-    - Causal market summaries
-
-    The orchestrator manages agent execution with:
-    - Sequential 3-phase execution
-    - Fallback strategies for failures
-    - Comprehensive error handling
-    """
-    # Generate request ID
-    request_id = str(uuid.uuid4())
-
-    # Bind request context for logging
-    bind_request_context(request_id, request.user_id)
-
-    logger.info(
-        "pulse_request_received",
-        request_id=request_id,
-        user_id=request.user_id,
-    )
-
-    # Create execution context
-    context = AgentExecutionContext(
-        request_id=request_id,
-        user_id=request.user_id,
-        timestamp=datetime.utcnow(),
-        trace_id=request_id,
-    )
-
-    try:
-        # Execute orchestration
-        response = await orchestrator.orchestrate(request, context)
-
-        # Log analytics in background
-        background_tasks.add_task(
-            log_analytics,
-            request,
-            response,
-            context,
-        )
-
-        logger.info(
-            "pulse_request_completed",
-            request_id=request_id,
-            market_phase=response.market_phase,
-            degraded_mode=response.degraded_mode,
-        )
-
-        return response
-
-    except OrchestrationError as e:
-        logger.error(
-            "orchestration_error",
-            request_id=request_id,
-            error=str(e),
-            failed_agents=e.failed_agents,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "ORCHESTRATION_ERROR",
-                "message": str(e),
-                "request_id": request_id,
-                "failed_agents": e.failed_agents,
-            },
-        )
-    except Exception as e:
-        logger.error(
-            "pulse_generation_failed",
-            request_id=request_id,
-            error=str(e),
-            error_type=type(e).__name__,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "GENERATION_ERROR",
-                "message": "Market Pulse generation failed",
-                "request_id": request_id,
-            },
-        )
-
-
 @app.get(
     "/api/v1/health",
     response_model=HealthCheckResponse,
     summary="Health Check",
-    description="Check API health status and agent availability.",
+    description="Check API health status and background agent availability.",
 )
 async def health_check() -> HealthCheckResponse:
     """
     Health check endpoint with agent status.
 
-    Returns the overall health status and individual agent statuses.
+    Returns the overall health status and background agent statuses.
     """
     return HealthCheckResponse(
         status="healthy",
-        service="market-pulse-multi-agent",
+        service="market-intelligence-api",
         version=__version__,
         timestamp=datetime.utcnow(),
         agents={
-            "market_intelligence": "operational",
-            "portfolio_insight": "operational",
-            "summary_generation": "operational",
-            "orchestrator": "operational",
+            "news_processing": "operational",
+            "snapshot_generation": "operational",
+            "indices_collection": "operational",
         },
     )
 
@@ -641,41 +574,484 @@ async def get_world_indices():
 
 
 @app.get(
+    "/api/v1/market-summary",
+    summary="Market Summary",
+    description="Get aggregated market summary from latest snapshot",
+)
+async def get_market_summary(
+    phase: Optional[str] = None,
+    include_news_details: bool = True,
+    news_limit: int = 10,
+):
+    """
+    Get aggregated market summary.
+
+    This endpoint returns the latest market snapshot which includes:
+    - Market outlook (sentiment, confidence, reasoning)
+    - Indices data
+    - Market summary bullets with causal language
+    - Executive summary
+    - Trending news (mid-market) or themed news (pre/post)
+
+    Query Parameters:
+    - phase: Optional market phase filter (pre/mid/post)
+    - include_news_details: Include full news details (default: true)
+    - news_limit: Maximum news items to include (default: 10, max: 50)
+
+    Response time target: < 200ms (with caching)
+    """
+    from datetime import datetime
+    
+    logger.info(
+        "market_summary_request",
+        phase=phase,
+        include_news_details=include_news_details,
+        news_limit=news_limit,
+    )
+
+    try:
+        from app.db.mongodb import get_mongodb_client
+        from app.db.repositories.snapshot_repository import get_snapshot_repository
+        from app.db.repositories.news_repository import get_news_repository
+        from app.services.market_intelligence_service import get_market_phase
+
+        # Ensure MongoDB is connected
+        mongo_client = get_mongodb_client()
+        try:
+            await mongo_client.connect()
+        except Exception:
+            pass  # Already connected
+
+        snapshot_repo = get_snapshot_repository()
+        news_repo = get_news_repository()
+
+        # Determine market phase
+        if not phase:
+            phase_data = await get_market_phase()
+            phase = phase_data["phase"]
+
+        # Try to get latest valid snapshot
+        snapshot = await snapshot_repo.get_latest_valid(phase)
+
+        if not snapshot:
+            # No valid snapshot, try to get any latest
+            snapshot = await snapshot_repo.get_latest(phase)
+            
+            if not snapshot:
+                # No snapshot at all, trigger generation and return basic response
+                from app.celery_app.tasks.snapshot_tasks import generate_market_snapshot
+                generate_market_snapshot.delay(market_phase=phase, force=True)
+                
+                return {
+                    "generated_at": datetime.utcnow().isoformat(),
+                    "market_phase": phase,
+                    "status": "generating",
+                    "message": "Snapshot generation in progress. Please retry in 30 seconds.",
+                    "market_outlook": None,
+                    "indices_data": [],
+                    "market_summary": [],
+                    "executive_summary": None,
+                    "all_news": [],
+                }
+
+        # Build response
+        response = {
+            "generated_at": snapshot.generated_at.isoformat(),
+            "request_id": snapshot.snapshot_id,
+            "market_phase": snapshot.market_phase,
+            "market_outlook": snapshot.market_outlook.model_dump() if snapshot.market_outlook else None,
+            "indices_data": [idx.model_dump() for idx in snapshot.indices_data],
+            "market_summary": [ms.model_dump() for ms in snapshot.market_summary],
+            "executive_summary": snapshot.executive_summary,
+            "trending_now": snapshot.trending_now if snapshot.market_phase == "mid" else None,
+            "all_news_ids": snapshot.all_news_ids[:news_limit],
+            "degraded_mode": snapshot.degraded_mode,
+            "warnings": snapshot.warnings,
+        }
+
+        # Optionally include full news details
+        if include_news_details and snapshot.all_news_ids:
+            news_ids = snapshot.all_news_ids[:min(news_limit, 50)]
+            news_docs = await news_repo.get_by_ids(news_ids)
+            response["all_news"] = [
+                {
+                    "news_id": n.news_id,
+                    "headline": n.headline,
+                    "summary": n.summary,
+                    "source": n.source,
+                    "published_at": n.published_at.isoformat(),
+                    "sentiment": n.sentiment,
+                    "mentioned_stocks": n.mentioned_stocks,
+                    "mentioned_sectors": n.mentioned_sectors,
+                    "is_breaking": n.is_breaking,
+                }
+                for n in news_docs
+            ]
+
+        return response
+
+    except Exception as e:
+        logger.error("market_summary_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "MARKET_SUMMARY_ERROR",
+                "message": str(e),
+            },
+        )
+
+
+@app.post(
+    "/api/v1/snapshot/generate",
+    summary="Trigger Snapshot Generation",
+    description="Manually trigger market snapshot generation",
+)
+async def trigger_snapshot_generation(
+    phase: Optional[str] = None,
+    force: bool = False,
+    background_tasks: BackgroundTasks = None,
+):
+    """
+    Manually trigger snapshot generation.
+
+    Query Parameters:
+    - phase: Market phase (pre/mid/post). If not provided, auto-detected.
+    - force: Force regeneration even if recent snapshot exists
+
+    Returns:
+    - Task status and snapshot ID (if available)
+    """
+    logger.info(
+        "snapshot_generation_triggered",
+        phase=phase,
+        force=force,
+    )
+
+    try:
+        from app.celery_app.tasks.snapshot_tasks import generate_market_snapshot
+        from app.services.market_intelligence_service import get_market_phase
+
+        # Determine phase if not provided
+        if not phase:
+            phase_data = await get_market_phase()
+            phase = phase_data["phase"]
+
+        # Trigger async task
+        task = generate_market_snapshot.delay(market_phase=phase, force=force)
+
+        return {
+            "status": "triggered",
+            "task_id": task.id,
+            "market_phase": phase,
+            "message": "Snapshot generation started. Check /api/v1/market-summary for results.",
+        }
+
+    except Exception as e:
+        logger.error("snapshot_trigger_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "SNAPSHOT_TRIGGER_ERROR",
+                "message": str(e),
+            },
+        )
+
+
+@app.post(
+    "/api/v1/data/populate",
+    summary="Trigger Data Population (Async)",
+    description="Manually trigger data population tasks asynchronously (news, indices, snapshot)",
+)
+async def trigger_data_population(
+    fetch_news: bool = True,
+    fetch_indices: bool = True,
+    generate_snapshot: bool = True,
+):
+    """
+    Manually trigger data population tasks asynchronously.
+
+    Query Parameters:
+    - fetch_news: Trigger news fetch (default: true)
+    - fetch_indices: Trigger indices fetch (default: true)
+    - generate_snapshot: Trigger snapshot generation (default: true)
+
+    Returns:
+    - Task IDs for triggered tasks
+    """
+    logger.info(
+        "data_population_triggered",
+        fetch_news=fetch_news,
+        fetch_indices=fetch_indices,
+        generate_snapshot=generate_snapshot,
+    )
+
+    try:
+        tasks = {}
+
+        if fetch_news:
+            from app.celery_app.tasks.news_tasks import fetch_and_process_news
+            task = fetch_and_process_news.delay(limit=20)
+            tasks["news_fetch"] = {"task_id": task.id, "status": "queued"}
+
+        if fetch_indices:
+            from app.celery_app.tasks.indices_tasks import fetch_indices_data
+            task = fetch_indices_data.delay()
+            tasks["indices_fetch"] = {"task_id": task.id, "status": "queued"}
+
+        if generate_snapshot:
+            from app.celery_app.tasks.snapshot_tasks import generate_market_snapshot
+            task = generate_market_snapshot.delay(force=True)
+            tasks["snapshot_generation"] = {"task_id": task.id, "status": "queued"}
+
+        return {
+            "status": "tasks_queued",
+            "tasks": tasks,
+            "message": "Check /api/v1/db/stats for results after tasks complete.",
+        }
+
+    except Exception as e:
+        logger.error("data_population_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "DATA_POPULATION_ERROR",
+                "message": str(e),
+            },
+        )
+
+
+@app.post(
+    "/api/v1/data/populate/news",
+    summary="Fetch News (Sync)",
+    description="Synchronously fetch and process news from all sources",
+)
+async def sync_fetch_news(
+    limit: int = 20,
+):
+    """
+    Synchronously fetch and process news.
+
+    This endpoint waits for completion and returns results immediately.
+
+    Query Parameters:
+    - limit: Number of items per news type to fetch (default: 20)
+
+    Returns:
+    - Statistics about fetched and processed news
+    """
+    logger.info("sync_fetch_news_started", limit=limit)
+
+    try:
+        from app.celery_app.tasks.news_tasks import _fetch_and_process_news_async
+
+        result = await _fetch_and_process_news_async(limit)
+
+        logger.info("sync_fetch_news_completed", **result)
+
+        return {
+            "status": "success",
+            "operation": "news_fetch",
+            "statistics": result,
+        }
+
+    except Exception as e:
+        logger.error("sync_fetch_news_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "NEWS_FETCH_ERROR",
+                "message": str(e),
+            },
+        )
+
+
+@app.post(
+    "/api/v1/data/populate/indices",
+    summary="Fetch Indices (Sync)",
+    description="Synchronously fetch and store world indices data",
+)
+async def sync_fetch_indices():
+    """
+    Synchronously fetch and store indices data.
+
+    This endpoint waits for completion and returns results immediately.
+    Unlike the async version, this always fetches regardless of market hours.
+
+    Returns:
+    - Statistics about fetched and stored indices
+    """
+    logger.info("sync_fetch_indices_started")
+
+    try:
+        from app.celery_app.tasks.indices_tasks import _fetch_indices_async
+
+        result = await _fetch_indices_async()
+
+        logger.info("sync_fetch_indices_completed", **result)
+
+        return {
+            "status": "success",
+            "operation": "indices_fetch",
+            "statistics": result,
+        }
+
+    except Exception as e:
+        logger.error("sync_fetch_indices_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "INDICES_FETCH_ERROR",
+                "message": str(e),
+            },
+        )
+
+
+@app.post(
+    "/api/v1/data/populate/snapshot",
+    summary="Generate Snapshot (Sync)",
+    description="Synchronously generate market snapshot",
+)
+async def sync_generate_snapshot(
+    phase: Optional[str] = None,
+    force: bool = True,
+):
+    """
+    Synchronously generate market snapshot.
+
+    This endpoint waits for completion and returns results immediately.
+
+    Query Parameters:
+    - phase: Market phase (pre/mid/post). If not provided, auto-detected.
+    - force: Force generation even if recent snapshot exists (default: true)
+
+    Returns:
+    - Snapshot ID and generation statistics
+    """
+    logger.info("sync_generate_snapshot_started", phase=phase, force=force)
+
+    try:
+        from app.celery_app.tasks.snapshot_tasks import _generate_snapshot_async
+
+        result = await _generate_snapshot_async(phase, force)
+
+        logger.info("sync_generate_snapshot_completed", **result)
+
+        return {
+            "status": "success",
+            "operation": "snapshot_generation",
+            "result": result,
+        }
+
+    except Exception as e:
+        logger.error("sync_generate_snapshot_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "SNAPSHOT_GENERATION_ERROR",
+                "message": str(e),
+            },
+        )
+
+
+@app.get(
+    "/api/v1/db/stats",
+    summary="Database Statistics",
+    description="Get statistics about stored data",
+)
+async def get_database_stats():
+    """
+    Get database statistics.
+
+    Returns counts and metadata about stored data:
+    - News articles count
+    - Snapshots count
+    - Indices data points
+    """
+    logger.info("database_stats_request")
+
+    try:
+        from app.db.mongodb import get_mongodb_client
+
+        mongo_client = get_mongodb_client()
+        
+        # Check if MongoDB is healthy
+        is_healthy = await mongo_client.health_check()
+        if not is_healthy:
+            return {
+                "status": "unavailable",
+                "message": "MongoDB not connected",
+            }
+
+        db = mongo_client.get_database()
+
+        # Get collection stats
+        news_count = await db["news_articles"].count_documents({})
+        snapshots_count = await db["market_snapshots"].count_documents({})
+        indices_count = await db["indices_timeseries"].count_documents({})
+
+        # Get latest snapshot info
+        latest_snapshot = await db["market_snapshots"].find_one(
+            sort=[("generated_at", -1)]
+        )
+
+        return {
+            "status": "healthy",
+            "collections": {
+                "news_articles": news_count,
+                "market_snapshots": snapshots_count,
+                "indices_timeseries": indices_count,
+            },
+            "latest_snapshot": {
+                "snapshot_id": latest_snapshot.get("snapshot_id") if latest_snapshot else None,
+                "generated_at": latest_snapshot.get("generated_at").isoformat() if latest_snapshot else None,
+                "market_phase": latest_snapshot.get("market_phase") if latest_snapshot else None,
+            } if latest_snapshot else None,
+        }
+
+    except Exception as e:
+        logger.error("database_stats_error", error=str(e))
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+@app.get(
     "/api/v1/agents/status",
     response_model=AgentStatusResponse,
     summary="Agent Status",
-    description="Get detailed status and metrics for all agents.",
+    description="Get detailed status and metrics for background processing agents.",
 )
 async def agent_status() -> AgentStatusResponse:
     """
     Get detailed agent status and metrics.
 
-    Returns information about each agent including:
+    Returns information about each background processing agent including:
     - Operational status
-    - Average execution time
-    - Success rate
+    - Description of responsibilities
+    - Task schedule
     """
     agents = [
         {
-            "name": "market_intelligence_agent",
+            "name": "news_processing_agent",
             "status": "operational",
-            "description": "Fetches market data, news, and analyzes market conditions",
-            "avg_execution_time_ms": 450,
+            "description": "AI-powered news analysis (sentiment, entities, summaries). Runs every 15 min.",
+            "avg_execution_time_ms": 500,
             "success_rate": 0.98,
         },
         {
-            "name": "portfolio_insight_agent",
+            "name": "snapshot_generation_agent",
             "status": "operational",
-            "description": "Retrieves user context and analyzes news impact on portfolio",
-            "avg_execution_time_ms": 650,
+            "description": "AI-powered market snapshot generation (outlook, causal bullets). Runs every 30 min.",
+            "avg_execution_time_ms": 800,
             "success_rate": 0.97,
         },
         {
-            "name": "summary_generation_agent",
+            "name": "indices_collection_agent",
             "status": "operational",
-            "description": "Creates market summaries with causal language",
-            "avg_execution_time_ms": 400,
-            "success_rate": 0.97,
+            "description": "Indices data collection and historical storage. Runs every 5 min during market hours.",
+            "avg_execution_time_ms": 200,
+            "success_rate": 0.99,
         },
     ]
 
@@ -694,50 +1070,19 @@ async def agent_status() -> AgentStatusResponse:
 async def root():
     """Root endpoint with API information."""
     return {
-        "service": "Market Pulse Multi-Agent API",
+        "service": "Market Intelligence API",
         "version": __version__,
         "status": "running",
-        "architecture": "simplified-3-agent",
+        "architecture": "background-processing-3-agent",
         "agents": [
-            "market_intelligence_agent",
-            "portfolio_insight_agent",
-            "summary_generation_agent",
+            "news_processing_agent",
+            "snapshot_generation_agent",
+            "indices_collection_agent",
         ],
         "docs": "/docs",
         "health": "/api/v1/health",
+        "market_summary": "/api/v1/market-summary",
     }
-
-
-# =============================================================================
-# Background Tasks
-# =============================================================================
-
-
-async def log_analytics(
-    request: MarketPulseRequest,
-    response: MarketPulseResponse,
-    context: AgentExecutionContext,
-):
-    """
-    Background task to log analytics.
-
-    Records metrics about the request for monitoring and analysis.
-    """
-    try:
-        logger.info(
-            "analytics_logged",
-            request_id=context.request_id,
-            user_id=request.user_id,
-            market_phase=response.market_phase,
-            news_count=len(response.all_news),
-            themes_count=len(response.themed_news),
-            degraded_mode=response.degraded_mode,
-        )
-    except Exception as e:
-        logger.warning(
-            "analytics_logging_failed",
-            error=str(e),
-        )
 
 
 # =============================================================================

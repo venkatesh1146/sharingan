@@ -16,12 +16,6 @@ import httpx
 
 from app.utils.logging import get_logger
 from app.utils.exceptions import DataFetchError
-from app.services.redis_service import (
-    RedisService,
-    build_cache_key,
-    get_date_identifier,
-    get_24hr_ttl,
-)
 from app.config import get_settings
 
 logger = get_logger(__name__)
@@ -42,8 +36,7 @@ class CMOTSNewsService:
     """Service for fetching and caching market news from CMOTS API with integrated proxy calls."""
 
     def __init__(self):
-        """Initialize CMOTS news service with Redis client and settings."""
-        self.redis_service = RedisService()
+        """Initialize CMOTS news service with settings."""
         self.settings = get_settings()
         self.news_types = NEWS_TYPES
 
@@ -69,7 +62,7 @@ class CMOTSNewsService:
         """
         merged = dict(headers or {})
         if self.settings.CMOTS_TOKEN and "Authorization" not in merged:
-            merged["Authorization"] = self.settings.CMOTS_TOKEN
+            merged["Authorization"] = f'Bearer {self.settings.CMOTS_TOKEN}'
         return merged
 
     async def _call_proxy_api(
@@ -111,7 +104,7 @@ class CMOTSNewsService:
         }
 
         timeout = timeout_seconds or self.settings.FUNDS_API_TIMEOUT_SECONDS
-
+        print(request_body)
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
@@ -321,55 +314,30 @@ class CMOTSNewsService:
         page: int = 1,
         per_page: int = 10,
         news_type: Optional[str] = None,
-        use_cache: bool = True,
     ) -> Dict[str, Any]:
         """
-        Fetch unified market news from all sources with caching and pagination.
+        Fetch unified market news from all sources with pagination.
 
-        Calls 4 endpoints:
+        Calls 6 endpoints:
         - Economy News
         - Other Markets News
         - Foreign Markets News
         - Mid-Session News
+        - Pre-Session News
+        - End-Session News
 
         Combines all results with a news_type field and applies standardized pagination.
-        Results are cached with 2-hour TTL.
 
         Args:
             limit: Number of items per news type to fetch from API (default: 10)
             page: Page number for pagination (1-indexed, default: 1)
             per_page: Items per page (1-100, default: 10)
             news_type: Filter by specific news type (optional)
-            use_cache: Enable/disable caching (default: True)
 
         Returns:
             Dictionary with paginated data and pagination metadata
         """
-        # Build cache key using date identifier and limit
-        cache_key = build_cache_key(
-            self.settings.NEWS_CACHE_PREFIX,
-            f"{get_date_identifier()}:{limit}",
-        )
-
-        # Skip caching for mid-market
-        should_cache = use_cache and self.settings.ENABLE_CACHING and news_type != "mid-market"
-
-        # Try to get from cache first
-        if should_cache:
-            cached_data = await self.redis_service.get(cache_key)
-            if cached_data:
-                logger.info("news_cache_hit", cache_key=cache_key, limit=limit)
-                return self._apply_pagination_and_filter(
-                    cached_data,
-                    page,
-                    per_page,
-                    news_type,
-                )
-
-        logger.info("news_cache_miss_or_disabled", cache_key=cache_key)
-
         all_news = []
-        errors = []
 
         # Fetch from all 6 sources
         news_sources = [
@@ -403,12 +371,6 @@ class CMOTSNewsService:
             )
         except Exception as e:
             logger.warning("news_sorting_failed", error=str(e))
-
-        # Cache the raw news data
-        if should_cache:
-            ttl = get_24hr_ttl()
-            await self.redis_service.set(cache_key, all_news, ttl_seconds=ttl)
-            logger.info("news_cached", cache_key=cache_key, limit=limit, ttl_seconds=ttl)
 
         return self._apply_pagination_and_filter(
             all_news,
@@ -480,17 +442,15 @@ class CMOTSNewsService:
         limit: int = 10,
         page: int = 1,
         per_page: int = 10,
-        use_cache: bool = True,
     ) -> Dict[str, Any]:
         """
-        Fetch news for a specific type with pagination and caching.
+        Fetch news for a specific type with pagination.
 
         Args:
             news_type: "economy-news", "other-markets", "foreign-markets", "mid-market", "pre-market", or "post-market"
             limit: Number of items to fetch from API
             page: Page number for pagination (1-indexed)
             per_page: Items per page (1-100)
-            use_cache: Enable/disable caching (default: True)
 
         Returns:
             Dictionary with paginated news items and pagination metadata
@@ -499,27 +459,6 @@ class CMOTSNewsService:
             raise ValueError(
                 f"Invalid news_type. Must be one of: {', '.join(self.news_types.keys())}"
             )
-
-        # Build type-specific cache key including limit
-        cache_key = build_cache_key(
-            self.settings.NEWS_CACHE_PREFIX,
-            f"{get_date_identifier()}:{news_type}:{limit}",
-        )
-
-        # Skip caching for mid-market only (pre-market and post-market use caching)
-        should_cache = use_cache and self.settings.ENABLE_CACHING and news_type != "mid-market"
-
-        # Try to get from cache first
-        if should_cache:
-            cached_data = await self.redis_service.get(cache_key)
-            if cached_data:
-                logger.info("news_type_cache_hit", cache_key=cache_key, limit=limit)
-                return self._apply_type_pagination(
-                    cached_data,
-                    page,
-                    per_page,
-                    news_type,
-                )
 
         # Map news types to their API endpoints
         if news_type == "mid-market":
@@ -553,12 +492,6 @@ class CMOTSNewsService:
             # Remove internal grouping key
             for item in items:
                 item.pop("_type_key", None)
-
-            # Cache the items
-            if should_cache:
-                ttl = get_24hr_ttl()
-                await self.redis_service.set(cache_key, items, ttl_seconds=ttl)
-                logger.info("news_type_cached", cache_key=cache_key, limit=limit, ttl_seconds=ttl)
 
             return self._apply_type_pagination(items, page, per_page, news_type)
 
@@ -613,31 +546,6 @@ class CMOTSNewsService:
             "news_type": self.news_types.get(news_type, news_type),
             "fetched_at": datetime.utcnow().isoformat(),
         }
-
-    async def clear_cache(self, news_type: Optional[str] = None) -> int:
-        """
-        Clear cached news data.
-
-        Args:
-            news_type: Clear specific type cache. If None, clears all news caches.
-
-        Returns:
-            Number of cache keys deleted
-        """
-        if news_type:
-            cache_key = build_cache_key(
-                self.settings.NEWS_CACHE_PREFIX,
-                f"{get_date_identifier()}:{news_type}",
-            )
-            deleted = await self.redis_service.delete(cache_key)
-            logger.info("news_type_cache_cleared", cache_key=cache_key)
-            return 1 if deleted else 0
-        else:
-            pattern = f"{self.settings.NEWS_CACHE_PREFIX}:{get_date_identifier()}*"
-            deleted = await self.redis_service.clear_pattern(pattern)
-            logger.info("news_cache_cleared", pattern=pattern, count=deleted)
-            return deleted
-
 
 def get_cmots_news_service() -> CMOTSNewsService:
     """Create a new CMOTS news service instance."""

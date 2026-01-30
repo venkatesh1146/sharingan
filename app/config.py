@@ -52,6 +52,35 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     REDIS_CACHE_TTL: int = 7200  # only 2 hours in seconds
     NEWS_CACHE_PREFIX: str = "allMarketNews"
+    REDIS_CELERY_DB: int = 0  # Redis DB for Celery broker
+    REDIS_CELERY_BACKEND_DB: int = 1  # Redis DB for Celery results
+    REDIS_CACHE_DB: int = 2  # Redis DB for application cache
+
+    # MongoDB Configuration
+    MONGODB_URL: str = "mongodb://localhost:27017"
+    MONGODB_DATABASE: str = "market_intelligence"
+    MONGODB_MAX_POOL_SIZE: int = 50
+    MONGODB_MIN_POOL_SIZE: int = 10
+
+    # Celery Configuration
+    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
+    CELERY_TIMEZONE: str = "Asia/Kolkata"
+    CELERY_TASK_TIME_LIMIT: int = 300  # 5 minutes
+    CELERY_TASK_SOFT_TIME_LIMIT: int = 240  # 4 minutes
+
+    # Task Schedules (in seconds)
+    NEWS_FETCH_INTERVAL: int = 900  # 15 minutes
+    SNAPSHOT_GENERATION_INTERVAL: int = 1800  # 30 minutes
+    INDICES_FETCH_INTERVAL: int = 300  # 5 minutes
+
+    # Data Retention
+    SNAPSHOT_TTL_SECONDS: int = 86400  # 1 day
+    NEWS_RETENTION_DAYS: int = 90
+    INDICES_RETENTION_DAYS: int = 90
+
+    # Cleanup Task Control
+    PAUSE_CLEANUP_TASKS: bool = True  # Set to False to enable cleanup tasks
 
     # Data Source URLs (Placeholders)
     MARKET_DATA_API_URL: str = "https://placeholder.api/market"

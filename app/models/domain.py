@@ -2,8 +2,7 @@
 Core domain models shared across the Market Pulse Multi-Agent system.
 
 These models represent the fundamental data structures used throughout
-the application, including market data, news items, portfolio holdings,
-and analysis results.
+the application, including market data, news items, and analysis results.
 """
 
 from datetime import datetime
@@ -138,39 +137,8 @@ class ThemeGroup(BaseModel):
         ..., description="Causal explanation of the theme's impact"
     )
     relevance_to_user: float = Field(
-        default=0.5, ge=0.0, le=1.0, description="Relevance to user's portfolio/watchlist"
+        default=0.5, ge=0.0, le=1.0, description="Relevance score"
     )
-
-
-# =============================================================================
-# Portfolio & User Models
-# =============================================================================
-
-
-class PortfolioHolding(BaseModel):
-    """Represents a single holding in user's portfolio."""
-
-    ticker: str = Field(..., description="Stock ticker symbol")
-    company_name: str = Field(..., description="Full company name")
-    quantity: int = Field(..., ge=0, description="Number of shares held")
-    average_price: float = Field(..., gt=0, description="Average purchase price")
-    current_price: float = Field(..., gt=0, description="Current market price")
-    unrealized_pnl: float = Field(..., description="Unrealized profit/loss")
-    unrealized_pnl_percent: float = Field(..., description="Unrealized P&L percentage")
-    sector: str = Field(..., description="Stock's sector classification")
-    weight_in_portfolio: float = Field(
-        default=0.0, ge=0.0, le=1.0, description="Weight in total portfolio"
-    )
-
-    @property
-    def current_value(self) -> float:
-        """Calculate current value of the holding."""
-        return self.quantity * self.current_price
-
-    @property
-    def invested_value(self) -> float:
-        """Calculate invested value of the holding."""
-        return self.quantity * self.average_price
 
 
 # =============================================================================
@@ -193,8 +161,6 @@ class ImpactedStock(BaseModel):
     related_news_ids: List[str] = Field(
         default_factory=list, description="News items causing this impact"
     )
-    in_portfolio: bool = Field(default=False, description="Whether stock is in user's portfolio")
-    in_watchlist: bool = Field(default=False, description="Whether stock is in user's watchlist")
 
 
 class NewsWithImpact(BaseModel):
@@ -213,47 +179,6 @@ class NewsWithImpact(BaseModel):
     )
     impact_confidence: float = Field(
         default=0.5, ge=0.0, le=1.0, description="Confidence in impact analysis"
-    )
-
-
-class PortfolioImpact(BaseModel):
-    """Aggregate impact on user's portfolio."""
-
-    overall_sentiment: Literal["positive", "negative", "neutral", "mixed"] = Field(
-        ..., description="Overall portfolio sentiment"
-    )
-    estimated_impact_percent: float = Field(
-        ..., description="Estimated portfolio impact percentage"
-    )
-    top_affected_holdings: List[str] = Field(
-        ..., max_length=5, description="Top affected holdings (tickers)"
-    )
-    positive_drivers: List[str] = Field(
-        default_factory=list, description="Positive impact drivers"
-    )
-    negative_drivers: List[str] = Field(
-        default_factory=list, description="Negative impact drivers"
-    )
-    reasoning: str = Field(..., description="Explanation of portfolio impact")
-
-
-class WatchlistAlert(BaseModel):
-    """Alert for a watchlist stock."""
-
-    ticker: str = Field(..., description="Stock ticker symbol")
-    company_name: str = Field(..., description="Company name")
-    alert_type: Literal["opportunity", "risk", "neutral"] = Field(
-        ..., description="Type of alert"
-    )
-    alert_priority: Literal["high", "medium", "low"] = Field(
-        default="medium", description="Alert priority"
-    )
-    related_news_ids: List[str] = Field(
-        default_factory=list, description="Related news items"
-    )
-    reasoning: str = Field(..., description="Why this alert was generated")
-    suggested_action: Optional[str] = Field(
-        None, description="Suggested action (informational only)"
     )
 
 

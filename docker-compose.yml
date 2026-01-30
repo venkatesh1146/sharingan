@@ -11,14 +11,23 @@ services:
       - "8000:8000"
     environment:
       - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
-      - GEMINI_FAST_MODEL=${GEMINI_FAST_MODEL:-gemini-2.0-flash-exp}
+      - GEMINI_FAST_MODEL=${GEMINI_FAST_MODEL:-gemini-2.0-flash}
       - GEMINI_PRO_MODEL=${GEMINI_PRO_MODEL:-gemini-1.5-pro}
       - REDIS_URL=redis://redis:6379
+      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGODB_DATABASE=market_intelligence
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - ENABLE_CACHING=${ENABLE_CACHING:-true}
       - ENABLE_TRACING=${ENABLE_TRACING:-true}
+      - FUNDS_API_PROXY_URL=${FUNDS_API_PROXY_URL}
+      - FUNDS_API_X_TOKEN=${FUNDS_API_X_TOKEN}
+      - CMOTS_TOKEN=${CMOTS_TOKEN}
     depends_on:
       redis:
+        condition: service_healthy
+      mongodb:
         condition: service_healthy
     volumes:
       # Mount for development (optional, remove in production)
@@ -33,21 +42,109 @@ services:
     networks:
       - market-pulse-network
 
-  # Redis for caching
+  # Celery Worker
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-pulse-celery-worker
+    command: celery -A app.celery_app.celery_config worker --loglevel=info --concurrency=4
+    environment:
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - GEMINI_FAST_MODEL=${GEMINI_FAST_MODEL:-gemini-2.0-flash}
+      - REDIS_URL=redis://redis:6379
+      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGODB_DATABASE=market_intelligence
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - FUNDS_API_PROXY_URL=${FUNDS_API_PROXY_URL}
+      - FUNDS_API_X_TOKEN=${FUNDS_API_X_TOKEN}
+      - CMOTS_TOKEN=${CMOTS_TOKEN}
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - market-pulse-network
+
+  # Celery Beat (Scheduler)
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-pulse-celery-beat
+    command: celery -A app.celery_app.celery_config beat --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MONGODB_URL=mongodb://mongodb:27017
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - redis
+      - celery-worker
+    restart: unless-stopped
+    networks:
+      - market-pulse-network
+
+  # MongoDB
+  mongodb:
+    image: mongo:7.0
+    container_name: market-pulse-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=market_intelligence
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - market-pulse-network
+
+  # Redis for caching and Celery broker
   redis:
     image: redis:7-alpine
     container_name: market-pulse-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"  # Map to 6380 to avoid conflict with local Redis
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 3
     restart: unless-stopped
+    networks:
+      - market-pulse-network
+
+  # Flower - Celery Monitoring (optional)
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-pulse-flower
+    command: celery -A app.celery_app.celery_config flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      - redis
+      - celery-worker
+    profiles:
+      - monitoring
     networks:
       - market-pulse-network
 
@@ -66,8 +163,28 @@ services:
     networks:
       - market-pulse-network
 
+  # Mongo Express - MongoDB GUI (optional, for development)
+  mongo-express:
+    image: mongo-express:latest
+    container_name: market-pulse-mongo-express
+    ports:
+      - "8082:8081"
+    environment:
+      - ME_CONFIG_MONGODB_URL=mongodb://mongodb:27017/
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    profiles:
+      - dev
+    networks:
+      - market-pulse-network
+
 volumes:
   redis_data:
+    driver: local
+  mongodb_data:
     driver: local
 
 networks:

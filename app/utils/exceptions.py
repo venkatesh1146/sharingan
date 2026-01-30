@@ -1,11 +1,12 @@
 """
-Custom exceptions for Market Pulse Multi-Agent API.
+Custom exceptions for Market Intelligence API.
 
 Provides a hierarchy of exceptions for different error scenarios:
 - MarketPulseError: Base exception for all custom errors
 - AgentExecutionError: Errors during agent execution
 - DataValidationError: Input/output validation errors
-- OrchestrationError: Errors in the orchestration layer
+- DataFetchError: External data fetching errors
+- CacheError: Cache operation errors
 """
 
 from typing import Optional, Dict, Any
@@ -13,7 +14,7 @@ from typing import Optional, Dict, Any
 
 class MarketPulseError(Exception):
     """
-    Base exception for all Market Pulse errors.
+    Base exception for all Market Intelligence errors.
     
     All custom exceptions should inherit from this class.
     """
@@ -45,7 +46,7 @@ class MarketPulseError(Exception):
 
 class AgentExecutionError(MarketPulseError):
     """
-    Raised when an agent fails to execute successfully.
+    Raised when a background agent fails to execute successfully.
     
     This is a general error for agent execution failures that don't
     fall into more specific categories.
@@ -89,7 +90,7 @@ class AgentTimeoutError(AgentExecutionError):
 
 class AgentReasoningError(AgentExecutionError):
     """
-    Raised when an agent's reasoning or response is invalid.
+    Raised when an agent's AI reasoning or response is invalid.
     
     This indicates the AI model produced output that doesn't meet
     the expected format or quality requirements.
@@ -144,7 +145,7 @@ class DataFetchError(MarketPulseError):
     """
     Raised when external data fetching fails.
     
-    This includes failures to fetch market data, news, user data,
+    This includes failures to fetch market data, news,
     or any other external data source.
     """
 
@@ -169,36 +170,8 @@ class DataFetchError(MarketPulseError):
 
 
 # =============================================================================
-# Orchestration Errors
+# Infrastructure Errors
 # =============================================================================
-
-
-class OrchestrationError(MarketPulseError):
-    """
-    Raised when the orchestrator encounters an unrecoverable error.
-    
-    This indicates a failure at the orchestration level, such as
-    all critical agents failing or invalid orchestration state.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        failed_agents: Optional[list] = None,
-        phase: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-    ):
-        self.failed_agents = failed_agents or []
-        self.phase = phase
-        super().__init__(
-            message=message,
-            code="ORCHESTRATION_ERROR",
-            details={
-                "failed_agents": failed_agents,
-                "phase": phase,
-                **(details or {}),
-            },
-        )
 
 
 class CacheError(MarketPulseError):
@@ -232,4 +205,21 @@ class ConfigurationError(MarketPulseError):
             message=f"Configuration error for '{config_key}': {message}",
             code="CONFIGURATION_ERROR",
             details={"config_key": config_key, **(details or {})},
+        )
+
+
+class OrchestrationError(MarketPulseError):
+    """Raised when agent orchestration fails."""
+
+    def __init__(
+        self,
+        message: str,
+        failed_agents: Optional[list] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        self.failed_agents = failed_agents or []
+        super().__init__(
+            message=f"Orchestration failed: {message}",
+            code="ORCHESTRATION_ERROR",
+            details={"failed_agents": self.failed_agents, **(details or {})},
         )
