@@ -28,7 +28,8 @@ from app.models.responses import (
 from app.utils.logging import setup_logging, get_logger, bind_request_context
 from app.utils.tracing import setup_tracing
 from app.utils.exceptions import MarketPulseError, OrchestrationError
-from app.services.cmots_news_service import fetch_unified_market_news, fetch_news_by_type
+from app.services.cmots_news_service import get_market_news_service
+from app.services.redis_service import get_redis_service
 
 
 # Initialize settings and logging
@@ -57,10 +58,26 @@ async def lifespan(app: FastAPI):
     orchestrator = OrchestratorAgent()
     logger.info("orchestrator_initialized")
 
+    # Initialize Redis service
+    try:
+        redis_service = get_redis_service()
+        await redis_service.connect()
+        logger.info("redis_service_initialized")
+    except Exception as e:
+        logger.warning("redis_service_failed_to_initialize", error=str(e))
+
     yield
 
     # Shutdown
     logger.info("application_shutting_down")
+
+    # Close Redis connection
+    try:
+        redis_service = get_redis_service()
+        await redis_service.disconnect()
+        logger.info("redis_service_closed")
+    except Exception as e:
+        logger.warning("redis_service_close_failed", error=str(e))
 
 
 # Create FastAPI application
@@ -309,7 +326,8 @@ async def get_all_market_news(
     logger.info("all_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch, news_type=type)
 
     try:
-        response = await fetch_unified_market_news(
+        news_service = get_market_news_service()
+        response = await news_service.fetch_unified_market_news(
             limit=records_to_fetch,
             page=page,
             per_page=per_page,
@@ -366,7 +384,8 @@ async def get_news_by_type(
         )
 
     try:
-        response = await fetch_news_by_type(
+        news_service = get_market_news_service()
+        response = await news_service.fetch_news_by_type(
             news_type=news_type,
             limit=limit,
             page=page,
