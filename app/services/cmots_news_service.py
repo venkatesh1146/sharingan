@@ -33,6 +33,8 @@ NEWS_TYPES = {
     "other-markets": "Other Markets",
     "foreign-markets": "Foreign Markets",
     "mid-market": "Mid-Session",
+    "pre-market": "Pre-Session",
+    "post-market": "End-Session",
 }
 
 
@@ -369,12 +371,14 @@ class CMOTSNewsService:
         all_news = []
         errors = []
 
-        # Fetch from all 4 sources
+        # Fetch from all 6 sources
         news_sources = [
             ("economy-news", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/economy-news/{limit}"),
             ("other-markets", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/other-markets/{limit}"),
             ("foreign-markets", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/foreign-markets/{limit}"),
             ("mid-market", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/mid-session/{limit}"),
+            ("pre-market", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/pre-session/{limit}"),
+            ("post-market", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/end-session/{limit}"),
         ]
 
         # Filter news sources if a specific type is requested
@@ -482,7 +486,7 @@ class CMOTSNewsService:
         Fetch news for a specific type with pagination and caching.
 
         Args:
-            news_type: "economy-news", "other-markets", "foreign-markets", or "mid-market"
+            news_type: "economy-news", "other-markets", "foreign-markets", "mid-market", "pre-market", or "post-market"
             limit: Number of items to fetch from API
             page: Page number for pagination (1-indexed)
             per_page: Items per page (1-100)
@@ -502,7 +506,7 @@ class CMOTSNewsService:
             f"{get_date_identifier()}:{news_type}:{limit}",
         )
 
-        # Skip caching for mid-market
+        # Skip caching for mid-market only (pre-market and post-market use caching)
         should_cache = use_cache and self.settings.ENABLE_CACHING and news_type != "mid-market"
 
         # Try to get from cache first
@@ -517,8 +521,13 @@ class CMOTSNewsService:
                     news_type,
                 )
 
+        # Map news types to their API endpoints
         if news_type == "mid-market":
             url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/mid-session/{limit}"
+        elif news_type == "pre-market":
+            url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/pre-session/{limit}"
+        elif news_type == "post-market":
+            url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/end-session/{limit}"
         else:
             url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/{news_type}/{limit}"
 

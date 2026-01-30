@@ -451,6 +451,102 @@ async def get_mid_market_news(
         )
 
 
+@app.get(
+    "/api/v1/pre-market-news/{records_to_fetch}",
+    summary="Pre-Market News",
+    description="Fetch pre-session market news with pagination and caching",
+)
+async def get_pre_market_news(
+    records_to_fetch: int,
+    page: int = 1,
+    per_page: int = 10,
+):
+    """
+    Get pre-session market news with standardized pagination.
+
+    Path Parameters:
+    - records_to_fetch: Number of records to fetch from API
+
+    Query Parameters:
+    - page: Page number (1-indexed, default: 1)
+    - per_page: Items per page (1-100, default: 10)
+
+    Response includes:
+    - data: Array of pre-session news items for this page
+    - pagination: Pagination metadata (page, total_pages, has_next, etc.)
+    
+    Note: Pre-market news is cached with 24-hour TTL.
+    """
+    logger.info("pre_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch)
+
+    try:
+        news_service = get_cmots_news_service()
+        response = await news_service.fetch_news_by_type(
+            news_type="pre-market",
+            limit=records_to_fetch,
+            page=page,
+            per_page=per_page,
+        )
+        return response
+    except Exception as e:
+        logger.error("pre_market_news_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "PRE_MARKET_NEWS_ERROR",
+                "message": str(e),
+            },
+        )
+
+
+@app.get(
+    "/api/v1/post-market-news/{records_to_fetch}",
+    summary="Post-Market News",
+    description="Fetch end-session market news with pagination and caching",
+)
+async def get_post_market_news(
+    records_to_fetch: int,
+    page: int = 1,
+    per_page: int = 10,
+):
+    """
+    Get end-session market news with standardized pagination.
+
+    Path Parameters:
+    - records_to_fetch: Number of records to fetch from API
+
+    Query Parameters:
+    - page: Page number (1-indexed, default: 1)
+    - per_page: Items per page (1-100, default: 10)
+
+    Response includes:
+    - data: Array of end-session news items for this page
+    - pagination: Pagination metadata (page, total_pages, has_next, etc.)
+    
+    Note: Post-market news is cached with 24-hour TTL.
+    """
+    logger.info("post_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch)
+
+    try:
+        news_service = get_cmots_news_service()
+        response = await news_service.fetch_news_by_type(
+            news_type="post-market",
+            limit=records_to_fetch,
+            page=page,
+            per_page=per_page,
+        )
+        return response
+    except Exception as e:
+        logger.error("post_market_news_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "POST_MARKET_NEWS_ERROR",
+                "message": str(e),
+            },
+        )
+
+
 @app.post(
     "/api/v1/company-news",
     summary="Company-wise News",
