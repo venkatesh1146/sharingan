@@ -7,7 +7,6 @@ Contains:
 - tracing: OpenTelemetry distributed tracing
 - vertex_ai_client: Vertex AI client wrapper
 - pagination: Standardized pagination utilities
-- funds_api_client: Reusable Wealthy proxy API client
 """
 
 from app.utils.exceptions import (

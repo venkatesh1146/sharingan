@@ -4,6 +4,7 @@ Market News Service - Unified service for fetching news from multiple sources.
 Fetches economy, other markets, and foreign markets news from the CMOTS API
 and combines them into a single unified response with standardized pagination.
 Includes Redis caching for improved performance and reduced API calls.
+All API calls and caching logic are handled within this service.
 """
 
 from typing import Any, Dict, List, Optional
@@ -11,7 +12,8 @@ from datetime import datetime
 import re
 import asyncio
 
-from app.utils.funds_api_client import call_funds_proxy
+import httpx
+
 from app.utils.logging import get_logger
 from app.utils.exceptions import DataFetchError
 from app.services.redis_service import (
@@ -30,17 +32,127 @@ NEWS_TYPES = {
     "economy-news": "Economy",
     "other-markets": "Other Markets",
     "foreign-markets": "Foreign Markets",
+    "mid-market": "Mid-Session",
 }
 
 
-class MarketNewsService:
-    """Service for fetching and caching market news from multiple sources."""
+class CMOTSNewsService:
+    """Service for fetching and caching market news from CMOTS API with integrated proxy calls."""
 
     def __init__(self):
-        """Initialize market news service with Redis client."""
+        """Initialize CMOTS news service with Redis client and settings."""
         self.redis_service = RedisService()
         self.settings = get_settings()
         self.news_types = NEWS_TYPES
+
+    def _build_proxy_headers(self) -> Dict[str, str]:
+        """Build headers for proxy API request."""
+        return {
+            "X-TOKEN": self.settings.FUNDS_API_X_TOKEN,
+            "Content-Type": "application/json",
+        }
+
+    def _build_target_headers(
+        self,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """
+        Build headers for target API including CMOTS authorization.
+
+        Args:
+            headers: Optional additional headers
+
+        Returns:
+            Merged headers with Authorization
+        """
+        merged = dict(headers or {})
+        if self.settings.CMOTS_TOKEN and "Authorization" not in merged:
+            merged["Authorization"] = self.settings.CMOTS_TOKEN
+        return merged
+
+    async def _call_proxy_api(
+        self,
+        method: str,
+        url: str,
+        payload: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        timeout_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Call the Wealthy proxy API to reach CMOTS endpoints.
+
+        Args:
+            method: HTTP method to use for the upstream call (e.g., "get")
+            url: Upstream URL to call via the proxy
+            payload: Optional payload to send to upstream
+            headers: Optional upstream headers
+            timeout_seconds: Override timeout for this call
+
+        Returns:
+            Parsed JSON response from the proxy
+
+        Raises:
+            DataFetchError: If proxy URL/token not set or request fails
+        """
+        proxy_url = self.settings.FUNDS_API_PROXY_URL
+
+        if not proxy_url:
+            raise DataFetchError("funds_proxy", "FUNDS_API_PROXY_URL is not set")
+        if not self.settings.FUNDS_API_X_TOKEN:
+            raise DataFetchError("funds_proxy", "FUNDS_API_X_TOKEN is not set")
+
+        request_body = {
+            "method": method,
+            "url": url,
+            "payload": payload,
+            "headers": self._build_target_headers(headers),
+        }
+
+        timeout = timeout_seconds or self.settings.FUNDS_API_TIMEOUT_SECONDS
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    proxy_url,
+                    headers=self._build_proxy_headers(),
+                    json=request_body,
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "funds_proxy_http_error",
+                status_code=exc.response.status_code,
+                response_text=exc.response.text,
+            )
+            raise DataFetchError(
+                source="funds_proxy",
+                message="HTTP error from proxy",
+                status_code=exc.response.status_code,
+            ) from exc
+        except httpx.RequestError as exc:
+            logger.error("funds_proxy_request_error", error=str(exc))
+            raise DataFetchError(
+                source="funds_proxy",
+                message="Request error while calling proxy",
+            ) from exc
+
+    @staticmethod
+    def _extract_items(response: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Extract a list of items from varied CMOTS response shapes.
+
+        Returns:
+            List of items or an empty list if none found
+        """
+        if not isinstance(response, dict):
+            return []
+        items = response.get("data") or response.get("Data")
+        if isinstance(items, dict):
+            items = items.get("data") or items.get("Data")
+        if not isinstance(items, list):
+            return []
+        return items
 
     @staticmethod
     def _clean_html(text: str) -> str:
@@ -97,7 +209,7 @@ class MarketNewsService:
             return None
         url = f"https://wealthyapis.cmots.com/api/NewsDetails/{sno}"
         try:
-            response = await call_funds_proxy(
+            response = await self._call_proxy_api(
                 method="get",
                 url=url,
                 payload=None,
@@ -167,14 +279,14 @@ class MarketNewsService:
         try:
             logger.info("fetching_news", news_type=news_type_key, url=url)
 
-            response = await call_funds_proxy(
+            response = await self._call_proxy_api(
                 method="get",
                 url=url,
                 payload=None,
             )
 
             # Extract news items from response
-            items = response.get("data", [])
+            items = self._extract_items(response)
             logger.info("fetched_news_count", news_type=news_type_key, count=len(items))
 
             # Enrich items concurrently (details fetch)
@@ -212,13 +324,14 @@ class MarketNewsService:
         """
         Fetch unified market news from all sources with caching and pagination.
 
-        Calls 3 endpoints:
+        Calls 4 endpoints:
         - Economy News
         - Other Markets News
         - Foreign Markets News
+        - Mid-Session News
 
         Combines all results with a news_type field and applies standardized pagination.
-        Results are cached daily with 24-hour TTL.
+        Results are cached with 2-hour TTL.
 
         Args:
             limit: Number of items per news type to fetch from API (default: 10)
@@ -236,8 +349,11 @@ class MarketNewsService:
             f"{get_date_identifier()}:{limit}",
         )
 
+        # Skip caching for mid-market
+        should_cache = use_cache and self.settings.ENABLE_CACHING and news_type != "mid-market"
+
         # Try to get from cache first
-        if use_cache and self.settings.ENABLE_CACHING:
+        if should_cache:
             cached_data = await self.redis_service.get(cache_key)
             if cached_data:
                 logger.info("news_cache_hit", cache_key=cache_key, limit=limit)
@@ -253,11 +369,12 @@ class MarketNewsService:
         all_news = []
         errors = []
 
-        # Fetch from all 3 sources
+        # Fetch from all 4 sources
         news_sources = [
             ("economy-news", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/economy-news/{limit}"),
             ("other-markets", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/other-markets/{limit}"),
             ("foreign-markets", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/foreign-markets/{limit}"),
+            ("mid-market", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/mid-session/{limit}"),
         ]
 
         # Filter news sources if a specific type is requested
@@ -284,7 +401,7 @@ class MarketNewsService:
             logger.warning("news_sorting_failed", error=str(e))
 
         # Cache the raw news data
-        if self.settings.ENABLE_CACHING:
+        if should_cache:
             ttl = get_24hr_ttl()
             await self.redis_service.set(cache_key, all_news, ttl_seconds=ttl)
             logger.info("news_cached", cache_key=cache_key, limit=limit, ttl_seconds=ttl)
@@ -365,7 +482,7 @@ class MarketNewsService:
         Fetch news for a specific type with pagination and caching.
 
         Args:
-            news_type: "economy-news", "other-markets", or "foreign-markets"
+            news_type: "economy-news", "other-markets", "foreign-markets", or "mid-market"
             limit: Number of items to fetch from API
             page: Page number for pagination (1-indexed)
             per_page: Items per page (1-100)
@@ -385,8 +502,11 @@ class MarketNewsService:
             f"{get_date_identifier()}:{news_type}:{limit}",
         )
 
+        # Skip caching for mid-market
+        should_cache = use_cache and self.settings.ENABLE_CACHING and news_type != "mid-market"
+
         # Try to get from cache first
-        if use_cache and self.settings.ENABLE_CACHING:
+        if should_cache:
             cached_data = await self.redis_service.get(cache_key)
             if cached_data:
                 logger.info("news_type_cache_hit", cache_key=cache_key, limit=limit)
@@ -397,18 +517,21 @@ class MarketNewsService:
                     news_type,
                 )
 
-        url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/{news_type}/{limit}"
+        if news_type == "mid-market":
+            url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/mid-session/{limit}"
+        else:
+            url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/{news_type}/{limit}"
 
         try:
             logger.info("fetching_specific_news", news_type=news_type, url=url)
 
-            response = await call_funds_proxy(
+            response = await self._call_proxy_api(
                 method="get",
                 url=url,
                 payload=None,
             )
 
-            items = response.get("data", [])
+            items = self._extract_items(response)
 
             # Enrich items concurrently (details fetch)
             semaphore = asyncio.Semaphore(10)
@@ -423,7 +546,7 @@ class MarketNewsService:
                 item.pop("_type_key", None)
 
             # Cache the items
-            if self.settings.ENABLE_CACHING:
+            if should_cache:
                 ttl = get_24hr_ttl()
                 await self.redis_service.set(cache_key, items, ttl_seconds=ttl)
                 logger.info("news_type_cached", cache_key=cache_key, limit=limit, ttl_seconds=ttl)
@@ -507,16 +630,9 @@ class MarketNewsService:
             return deleted
 
 
-# Singleton instance
-_service_instance: Optional[MarketNewsService] = None
-
-
-def get_market_news_service() -> MarketNewsService:
-    """Get singleton market news service instance."""
-    global _service_instance
-    if _service_instance is None:
-        _service_instance = MarketNewsService()
-    return _service_instance
+def get_cmots_news_service() -> CMOTSNewsService:
+    """Create a new CMOTS news service instance."""
+    return CMOTSNewsService()
 
 
 async def fetch_world_indices() -> Dict[str, Any]:
@@ -537,7 +653,9 @@ async def fetch_world_indices() -> Dict[str, Any]:
     try:
         logger.info("fetching_world_indices", url=url)
 
-        response = await call_funds_proxy(
+        # Create service instance to call proxy API
+        service = CMOTSNewsService()
+        response = await service._call_proxy_api(
             method="get",
             url=url,
             payload=None,
