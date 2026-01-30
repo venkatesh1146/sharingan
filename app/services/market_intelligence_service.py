@@ -15,7 +15,7 @@ import json
 import pytz
 
 from app.config import get_settings
-from app.services.cmots_news_service import MarketNewsService, fetch_world_indices, get_market_news_service
+from app.services.cmots_news_service import CMOTSNewsService, fetch_world_indices, get_cmots_news_service
 from app.utils.logging import get_logger
 from app.agents.summary_generation_agent import SummaryGenerationAgent
 
@@ -106,39 +106,39 @@ MAX_SUMMARY_WORDS = 100
 async def _summarize_news_batch(news_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Summarize news item summaries using the SummaryGenerationAgent to be concise (under 100 words).
-    
+
     Delegates to the SummaryGenerationAgent for consistent summarization across the system.
-    
+
     Args:
         news_items: List of news items with 'summary' field
-    
+
     Returns:
         Same list with summaries condensed to under 100 words
     """
     if not news_items:
         return news_items
-    
+
     # Filter items that need summarization (over 100 words)
     items_to_summarize = []
     indices_to_summarize = []
-    
+
     for i, item in enumerate(news_items):
         summary = item.get("summary", "")
         word_count = len(summary.split())
         if word_count > MAX_SUMMARY_WORDS:
             items_to_summarize.append({"id": item.get("id", str(i)), "summary": summary})
             indices_to_summarize.append(i)
-    
+
     if not items_to_summarize:
         # All summaries are already concise
         return news_items
-    
+
     logger.info(
         "summarizing_news_batch",
         total_items=len(news_items),
         items_to_summarize=len(items_to_summarize),
     )
-    
+
     try:
         # Use SummaryGenerationAgent for summarization
         agent = SummaryGenerationAgent()
@@ -146,21 +146,21 @@ async def _summarize_news_batch(news_items: List[Dict[str, Any]]) -> List[Dict[s
             news_items=items_to_summarize,
             max_words=MAX_SUMMARY_WORDS,
         )
-        
+
         # Create a mapping of id to summarized text
         summary_map = {item["id"]: item["summary"] for item in summarized_items}
-        
+
         # Update the original news items with summarized content
         for idx in indices_to_summarize:
             item_id = news_items[idx].get("id", str(idx))
             if item_id in summary_map:
                 news_items[idx]["summary"] = summary_map[item_id]
-        
+
         logger.info(
             "news_summarization_complete",
             summarized_count=len(summarized_items),
         )
-    
+
     except json.JSONDecodeError as e:
         logger.warning(
             "news_summarization_json_error",
@@ -171,7 +171,7 @@ async def _summarize_news_batch(news_items: List[Dict[str, Any]]) -> List[Dict[s
             summary = news_items[idx].get("summary", "")
             words = summary.split()[:MAX_SUMMARY_WORDS]
             news_items[idx]["summary"] = " ".join(words) + "..." if len(summary.split()) > MAX_SUMMARY_WORDS else summary
-    
+
     except Exception as e:
         logger.warning(
             "news_summarization_error",
@@ -182,7 +182,7 @@ async def _summarize_news_batch(news_items: List[Dict[str, Any]]) -> List[Dict[s
             summary = news_items[idx].get("summary", "")
             words = summary.split()[:MAX_SUMMARY_WORDS]
             news_items[idx]["summary"] = " ".join(words) + "..." if len(summary.split()) > MAX_SUMMARY_WORDS else summary
-    
+
     return news_items
 
 
@@ -196,13 +196,13 @@ async def fetch_market_indices(
 ) -> Dict[str, Dict[str, Any]]:
     """
     Fetch current market data for all world indices from CMOTS API.
-    
+
     Args:
         indices: Optional list of index names to filter (if None, returns all)
-    
+
     Returns:
         Dictionary mapping normalized index name to index data
-        
+
     API Response Format:
         {
             "indexname": "BSE Sensex",
@@ -215,25 +215,25 @@ async def fetch_market_indices(
         }
     """
     result = {}
-    
+
     try:
         # Fetch all world indices from API
         api_response = await fetch_world_indices()
         raw_indices = api_response.get("data", [])
-        
+
         logger.info("fetched_world_indices", count=len(raw_indices))
-        
+
         for idx_data in raw_indices:
             index_name = idx_data.get("indexname", "Unknown")
             normalized_name = INDEX_NAME_MAP.get(index_name, index_name.upper())
-            
+
             # Parse timestamp from API
             date_str = idx_data.get("date", "")
             try:
                 timestamp = datetime.fromisoformat(date_str) if date_str else datetime.now(IST)
             except ValueError:
                 timestamp = datetime.now(IST)
-            
+
             # Map API response to our standard format
             result[normalized_name] = {
                 "ticker": normalized_name,
@@ -248,20 +248,20 @@ async def fetch_market_indices(
                 "volume": 0,  # API doesn't provide volume
                 "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp),
             }
-        
+
         # Filter by requested indices if provided
         if indices:
             # Normalize requested indices for comparison
             normalized_requested = {idx.upper(): idx for idx in indices}
             filtered_result = {}
-            
+
             for key, data in result.items():
                 if key in normalized_requested:
                     filtered_result[key] = data
                 # Also check original name match
                 elif data["name"].upper() in normalized_requested:
                     filtered_result[key] = data
-            
+
             # Add placeholder for any requested indices not found
             for requested_idx in indices:
                 normalized_req = requested_idx.upper()
@@ -280,11 +280,11 @@ async def fetch_market_indices(
                         "timestamp": datetime.now(IST).isoformat(),
                         "error": f"Index {requested_idx} not found in API response",
                     }
-            
+
             return filtered_result
-        
+
         return result
-        
+
     except Exception as e:
         logger.error("fetch_market_indices_error", error=str(e))
         # Return empty result with error for requested indices
@@ -311,12 +311,12 @@ async def fetch_market_indices(
 async def fetch_all_world_indices() -> Dict[str, Any]:
     """
     Fetch all world indices without filtering.
-    
+
     Returns:
         Dictionary with all indices data organized by region
     """
     all_indices = await fetch_market_indices(indices=None)
-    
+
     # Organize by country/region
     by_region = {
         "india": {},
@@ -324,7 +324,7 @@ async def fetch_all_world_indices() -> Dict[str, Any]:
         "europe": {},
         "americas": {},
     }
-    
+
     region_map = {
         "India": "india",
         "Hong Kong": "asia",
@@ -338,12 +338,12 @@ async def fetch_all_world_indices() -> Dict[str, Any]:
         "United Kingdom": "europe",
         "United States": "americas",
     }
-    
+
     for ticker, data in all_indices.items():
         country = data.get("country", "Unknown")
         region = region_map.get(country, "asia")
         by_region[region][ticker] = data
-    
+
     return {
         "all_indices": all_indices,
         "by_region": by_region,
@@ -355,12 +355,12 @@ async def fetch_all_world_indices() -> Dict[str, Any]:
 async def get_market_phase() -> Dict[str, Any]:
     """
     Determine the current market phase based on IST time.
-    
+
     Market phases:
     - pre: 08:00 - 09:15 (Pre-market)
     - mid: 09:15 - 15:30 (Trading hours)
     - post: 15:30 - 08:00 next day (Post-market)
-    
+
     Returns:
         Dictionary with phase and timing information
     """
@@ -412,12 +412,12 @@ async def calculate_index_momentum(
 ) -> Dict[str, Any]:
     """
     Calculate market momentum based on index movements.
-    
+
     Uses NIFTY (or SENSEX as fallback) as the primary index for momentum calculation.
-    
+
     Args:
         indices_data: Dictionary of index data
-    
+
     Returns:
         Momentum analysis results
     """
@@ -478,37 +478,37 @@ async def calculate_index_momentum(
 def _analyze_sentiment(headline: str, summary: str) -> tuple[str, float]:
     """
     Analyze sentiment from headline and summary text.
-    
+
     Returns:
         Tuple of (sentiment label, sentiment score)
     """
     text = f"{headline} {summary}".lower()
-    
+
     bullish_count = sum(1 for keyword in BULLISH_KEYWORDS if keyword in text)
     bearish_count = sum(1 for keyword in BEARISH_KEYWORDS if keyword in text)
-    
+
     # Calculate sentiment score (-1 to 1)
     total = bullish_count + bearish_count
     if total == 0:
         return "neutral", 0.0
-    
+
     score = (bullish_count - bearish_count) / max(total, 1)
     score = max(-1.0, min(1.0, score))  # Clamp to [-1, 1]
-    
+
     if score > 0.2:
         sentiment = "bullish"
     elif score < -0.2:
         sentiment = "bearish"
     else:
         sentiment = "neutral"
-    
+
     return sentiment, round(score, 2)
 
 
 def _transform_news_item(item: Dict[str, Any]) -> Dict[str, Any]:
     """
     Transform CMOTS API news item to internal format.
-    
+
     Maps:
         - sno -> id
         - heading -> headline
@@ -516,26 +516,26 @@ def _transform_news_item(item: Dict[str, Any]) -> Dict[str, Any]:
         - news_type -> mentioned_sectors (category)
         - published_at -> published_at
         - summary -> summary
-    
+
     Args:
         item: Raw news item from CMOTS API
-    
+
     Returns:
         Transformed news item in internal format
     """
     headline = item.get("heading", "")
     summary = item.get("summary", "")
     news_type = item.get("news_type", "")
-    
+
     # Analyze sentiment
     sentiment, sentiment_score = _analyze_sentiment(headline, summary)
-    
+
     # Determine sectors based on news type
     mentioned_sectors = NEWS_TYPE_SECTOR_MAP.get(news_type, [news_type]) if news_type else ["General"]
-    
+
     # Check if breaking news (most recent 3 articles are considered breaking)
     is_breaking = False  # Will be set later based on recency
-    
+
     return {
         "id": str(item.get("sno", "")),
         "headline": headline,
@@ -562,12 +562,12 @@ async def fetch_market_news(
 ) -> List[Dict[str, Any]]:
     """
     Fetch general market news articles from CMOTS API.
-    
+
     Fetches news from three sources:
     - Economy News (economic reports, policy updates)
     - Other Markets (commodities, forex, bullion)
     - Foreign Markets (global market updates)
-    
+
     Args:
         time_window_hours: How far back to fetch news (in hours)
         max_articles: Maximum number of articles to return
@@ -575,46 +575,46 @@ async def fetch_market_news(
             - "economy-news": Economic and policy news
             - "other-markets": Commodities, forex, bullion
             - "foreign-markets": Global market updates
-    
+
     Returns:
         List of news article dictionaries with standardized format
     """
     cutoff_time = datetime.now(IST) - timedelta(hours=time_window_hours)
-    
+
     # Map categories to news_type filter
     news_type_filter = None
     if categories and len(categories) == 1:
         news_type_filter = categories[0]
-    
+
     try:
         # Fetch from CMOTS API
-        news_service = get_market_news_service()
+        news_service = get_cmots_news_service()
         api_response = await news_service.fetch_unified_market_news(
             limit=max_articles,
             page=1,
             per_page=max_articles,
             news_type=news_type_filter,
         )
-        
+
         logger.info(
             "fetched_market_news",
             total_items=api_response.get("pagination", {}).get("total_items", 0),
             fetched_at=api_response.get("fetched_at"),
         )
-        
+
         # Collect all news items from all categories
         all_news = []
         data_by_type = api_response.get("data", {})
-        
+
         for news_type_key, items in data_by_type.items():
             # Filter by categories if provided
             if categories and news_type_key not in categories:
                 continue
-            
+
             for item in items:
                 transformed = _transform_news_item(item)
                 all_news.append(transformed)
-        
+
         # Filter by time window
         filtered_news = []
         for article in all_news:
@@ -633,32 +633,32 @@ async def fetch_market_news(
             except (ValueError, TypeError) as e:
                 logger.warning("news_time_parse_error", error=str(e), article_id=article.get("id"))
                 filtered_news.append(article)  # Include anyway
-        
+
         # Sort by published_at (most recent first)
         filtered_news.sort(
             key=lambda x: x.get("published_at", ""),
             reverse=True,
         )
-        
+
         # Mark most recent 3 articles as breaking
         for i, article in enumerate(filtered_news[:3]):
             article["is_breaking"] = True
-        
+
         # Limit to max_articles
         result = filtered_news[:max_articles]
-        
+
         # Summarize verbose summaries using LLM (under 100 words)
         result = await _summarize_news_batch(result)
-        
+
         logger.info(
             "processed_market_news",
             total_fetched=len(all_news),
             after_time_filter=len(filtered_news),
             returned=len(result),
         )
-        
+
         return result
-        
+
     except Exception as e:
         logger.error("fetch_market_news_error", error=str(e))
         # Return empty list on error
@@ -672,53 +672,53 @@ async def fetch_stock_specific_news(
 ) -> List[Dict[str, Any]]:
     """
     Fetch news mentioning specific stocks.
-    
+
     Searches through market news for articles that mention the given tickers
     in their headline or summary.
-    
+
     Args:
         tickers: List of stock tickers to search for
         time_window_hours: How far back to fetch news
         max_articles: Maximum articles to return
-    
+
     Returns:
         List of news articles mentioning the specified stocks
     """
     if not tickers:
         return []
-    
+
     # Normalize tickers for search
     tickers_upper = [t.upper() for t in tickers]
-    
+
     # Fetch all market news first
     all_news = await fetch_market_news(
         time_window_hours=time_window_hours,
         max_articles=100,  # Fetch more to search through
     )
-    
+
     matching_news = []
     for article in all_news:
         # Search for ticker mentions in headline and summary
         text = f"{article.get('headline', '')} {article.get('summary', '')}".upper()
-        
+
         matched_tickers = []
         for ticker in tickers_upper:
             # Look for ticker as whole word
             if ticker in text:
                 matched_tickers.append(ticker)
-        
+
         if matched_tickers:
             article_copy = article.copy()
             article_copy["matched_tickers"] = matched_tickers
             article_copy["mentioned_stocks"] = matched_tickers
             matching_news.append(article_copy)
-    
+
     # Sort by relevance (number of matches) and recency
     matching_news.sort(
         key=lambda x: (len(x.get("matched_tickers", [])), x.get("published_at", "")),
         reverse=True,
     )
-    
+
     return matching_news[:max_articles]
 
 
@@ -727,49 +727,49 @@ async def cluster_news_by_topic(
 ) -> List[Dict[str, Any]]:
     """
     Cluster news items into themes/topics.
-    
+
     Groups news by:
     1. News type (Economy, Other Markets, Foreign Markets)
     2. Primary sector from mentioned_sectors
-    
+
     Args:
         news_items: List of news articles to cluster
-    
+
     Returns:
         List of theme clusters with sentiment analysis
     """
     # Group by news_type first, then by sector
     type_groups: Dict[str, List[str]] = {}
     sector_groups: Dict[str, List[str]] = {}
-    
+
     for article in news_items:
         article_id = article.get("id", "")
-        
+
         # Group by news type
         news_type = article.get("news_type", "General")
         if news_type:
             if news_type not in type_groups:
                 type_groups[news_type] = []
             type_groups[news_type].append(article_id)
-        
+
         # Also group by mentioned sectors
         sectors = article.get("mentioned_sectors", ["General"])
         primary_sector = sectors[0] if sectors else "General"
-        
+
         if primary_sector not in sector_groups:
             sector_groups[primary_sector] = []
         sector_groups[primary_sector].append(article_id)
 
     themes = []
-    
+
     # Create themes from news type groups
     for news_type, news_ids in type_groups.items():
         cluster_articles = [a for a in news_items if a.get("id") in news_ids]
         if not cluster_articles:
             continue
-            
+
         avg_sentiment = sum(a.get("sentiment_score", 0) for a in cluster_articles) / len(cluster_articles)
-        
+
         if avg_sentiment > 0.2:
             sentiment = "bullish"
         elif avg_sentiment < -0.2:
@@ -805,13 +805,13 @@ async def cluster_news_by_topic(
         # Skip if already covered by news_type themes
         if sector in ["Economy", "Macro", "Policy", "Commodities", "Forex", "Bullion", "Global Markets", "International"]:
             continue
-        
+
         cluster_articles = [a for a in news_items if a.get("id") in news_ids]
         if not cluster_articles:
             continue
-            
+
         avg_sentiment = sum(a.get("sentiment_score", 0) for a in cluster_articles) / len(cluster_articles)
-        
+
         if avg_sentiment > 0.2:
             sentiment = "bullish"
         elif avg_sentiment < -0.2:
@@ -844,10 +844,10 @@ async def cluster_news_by_topic(
 def _get_phase_specific_indices(phase: str) -> List[str]:
     """
     Get the list of indices to show based on market phase.
-    
+
     Args:
         phase: Market phase ('pre', 'mid', 'post')
-    
+
     Returns:
         List of index tickers to include in response
     """
@@ -865,19 +865,19 @@ def _filter_indices_by_phase(
 ) -> Dict[str, Dict[str, Any]]:
     """
     Filter indices data based on market phase.
-    
+
     Args:
         all_indices: Dictionary of all fetched indices
         phase: Market phase ('pre', 'mid', 'post')
-    
+
     Returns:
         Filtered dictionary containing only phase-appropriate indices
     """
     phase_indices = _get_phase_specific_indices(phase)
-    
+
     # Normalize phase indices for comparison
     normalized_phase_indices = {idx.upper(): idx for idx in phase_indices}
-    
+
     filtered = {}
     for ticker, data in all_indices.items():
         ticker_upper = ticker.upper()
@@ -887,7 +887,7 @@ def _filter_indices_by_phase(
         # Also check by name match
         elif data.get("name", "").upper() in normalized_phase_indices:
             filtered[ticker] = data
-    
+
     return filtered
 
 
@@ -899,35 +899,35 @@ async def fetch_market_intelligence(
 ) -> Dict[str, Any]:
     """
     Fetch all market intelligence data in one call.
-    
+
     This is the main service function that combines:
     - Market indices data (from CMOTS World Indices API)
     - Market phase
     - Market news
     - Stock-specific news (if watchlist provided)
     - News clustering
-    
+
     The indices returned are filtered based on market phase:
     - Pre-market: GIFT NIFTY, Nikkei, FTSE 100, Shanghai Composite, DAX
     - Post-market: SENSEX, NIFTY, Shanghai Composite, Nikkei, FTSE 100, DJIA, S&P 500
     - Mid-market: SENSEX, NIFTY
-    
+
     Args:
         indices: Optional list of index tickers to filter (None = phase-based filtering)
         watchlist: Optional user watchlist for stock-specific news
         time_window_hours: News time window
         max_articles: Maximum news articles
-    
+
     Returns:
         Combined market intelligence data
     """
     # Fetch market phase first (needed for phase-based index filtering)
     phase_data = await get_market_phase()
     market_phase = phase_data["phase"]
-    
+
     # Fetch all indices data (from CMOTS World Indices API)
     all_indices_data = await fetch_market_indices(indices)
-    
+
     # Filter indices based on market phase
     # If specific indices were requested, use those; otherwise filter by phase
     if indices:
@@ -936,7 +936,7 @@ async def fetch_market_intelligence(
     else:
         # Apply phase-based filtering
         indices_data = _filter_indices_by_phase(all_indices_data, market_phase)
-    
+
     logger.info(
         "indices_filtered_by_phase",
         phase=market_phase,
@@ -944,13 +944,13 @@ async def fetch_market_intelligence(
         phase_filtered=len(indices_data),
         included_indices=list(indices_data.keys()),
     )
-    
+
     # Calculate momentum (use all data for accurate calculation)
     momentum_data = await calculate_index_momentum(all_indices_data)
-    
+
     # Fetch general market news
     news = await fetch_market_news(time_window_hours, max_articles)
-    
+
     # Fetch stock-specific news if watchlist provided
     if watchlist:
         stock_news = await fetch_stock_specific_news(
@@ -961,10 +961,10 @@ async def fetch_market_intelligence(
         for article in stock_news:
             if article["id"] not in existing_ids:
                 news.append(article)
-    
+
     # Cluster news into themes
     themes = await cluster_news_by_topic(news)
-    
+
     return {
         "market_phase": phase_data,
         "indices_data": indices_data,
@@ -978,7 +978,7 @@ async def fetch_market_intelligence(
 def get_market_intelligence_tools() -> List[Any]:
     """
     Get tool definitions for market intelligence functions.
-    
+
     Returns:
         List of tool definitions (currently empty as we use direct function calls)
     """
@@ -988,7 +988,7 @@ def get_market_intelligence_tools() -> List[Any]:
 def get_market_intelligence_tool_handlers() -> Dict[str, Callable]:
     """
     Get mapping of tool names to handler functions.
-    
+
     Returns:
         Dictionary mapping function names to async handlers
     """

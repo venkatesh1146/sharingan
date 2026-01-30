@@ -29,7 +29,7 @@ from app.utils.logging import setup_logging, get_logger, bind_request_context
 from app.utils.tracing import setup_tracing
 from app.utils.exceptions import MarketPulseError, OrchestrationError
 from app.services.redis_service import get_redis_service
-from app.services.cmots_news_service import fetch_world_indices, get_market_news_service
+from app.services.cmots_news_service import fetch_world_indices, get_cmots_news_service
 
 
 # Initialize settings and logging
@@ -309,6 +309,7 @@ async def get_all_market_news(
     - Economy News
     - Other Markets News
     - Foreign Markets News
+    - Mid-Session News
 
     Path Parameters:
     - records_to_fetch: Number of records to fetch per news type
@@ -316,17 +317,17 @@ async def get_all_market_news(
     Query Parameters:
     - page: Page number (1-indexed, default: 1)
     - per_page: Items per page (1-100, default: 10)
-    - type: Filter by news type (economy-news, other-markets, foreign-markets) - optional
+    - type: Filter by news type (economy-news, other-markets, foreign-markets, mid-market) - optional
 
     Response includes:
-    - data: News organized by type (economy-news, other-markets, foreign-markets)
+    - data: News organized by type (economy-news, other-markets, foreign-markets, mid-market)
     - pagination: Pagination metadata
     - errors: Any errors encountered during fetch
     """
     logger.info("all_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch, news_type=type)
 
     try:
-        news_service = get_market_news_service()
+        news_service = get_cmots_news_service()
         response = await news_service.fetch_unified_market_news(
             limit=records_to_fetch,
             page=page,
@@ -384,7 +385,7 @@ async def get_news_by_type(
         )
 
     try:
-        news_service = get_market_news_service()
+        news_service = get_cmots_news_service()
         response = await news_service.fetch_news_by_type(
             news_type=news_type,
             limit=limit,
@@ -400,6 +401,52 @@ async def get_news_by_type(
                 "error": "NEWS_FETCH_ERROR",
                 "message": str(e),
                 "news_type": news_type,
+            },
+        )
+
+
+@app.get(
+    "/api/v1/mid-market-news/{records_to_fetch}",
+    summary="Mid-Market News",
+    description="Fetch mid-session market news with pagination",
+)
+async def get_mid_market_news(
+    records_to_fetch: int,
+    page: int = 1,
+    per_page: int = 10,
+):
+    """
+    Get mid-session market news with standardized pagination.
+
+    Path Parameters:
+    - records_to_fetch: Number of records to fetch from API
+
+    Query Parameters:
+    - page: Page number (1-indexed, default: 1)
+    - per_page: Items per page (1-100, default: 10)
+
+    Response includes:
+    - data: Array of mid-session news items for this page
+    - pagination: Pagination metadata (page, total_pages, has_next, etc.)
+    """
+    logger.info("mid_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch)
+
+    try:
+        news_service = get_cmots_news_service()
+        response = await news_service.fetch_news_by_type(
+            news_type="mid-market",
+            limit=records_to_fetch,
+            page=page,
+            per_page=per_page,
+        )
+        return response
+    except Exception as e:
+        logger.error("mid_market_news_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "MID_MARKET_NEWS_ERROR",
+                "message": str(e),
             },
         )
 
