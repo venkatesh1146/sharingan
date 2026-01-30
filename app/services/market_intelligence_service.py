@@ -2,7 +2,7 @@
 Market Intelligence Service - Unified service for market data and news fetching.
 
 This service consolidates all data fetching operations:
-- Market index data
+- Market index data (from CMOTS World Indices API)
 - Market phase determination
 - News fetching (general and stock-specific)
 - News clustering
@@ -14,74 +14,40 @@ import hashlib
 import pytz
 
 from app.config import get_settings
+from app.services.cmots_news_service import fetch_world_indices
+from app.utils.logging import get_logger
 
+logger = get_logger(__name__)
 
 # Indian Standard Time
 IST = pytz.timezone("Asia/Kolkata")
 
 
 # =============================================================================
-# Mock Data (Replace with actual API calls in production)
+# Index Name Mapping (API names to normalized names)
 # =============================================================================
 
-
-MOCK_INDICES_DATA = {
-    "NIFTY 50": {
-        "ticker": "NIFTY 50",
-        "name": "NIFTY 50 Index",
-        "current_price": 22150.50,
-        "change_percent": 0.85,
-        "change_absolute": 186.75,
-        "previous_close": 21963.75,
-        "intraday_high": 22200.00,
-        "intraday_low": 21950.00,
-        "volume": 250000000,
-    },
-    "SENSEX": {
-        "ticker": "SENSEX",
-        "name": "S&P BSE SENSEX",
-        "current_price": 72850.25,
-        "change_percent": 0.72,
-        "change_absolute": 520.50,
-        "previous_close": 72329.75,
-        "intraday_high": 72950.00,
-        "intraday_low": 72200.00,
-        "volume": 180000000,
-    },
-    "BANK NIFTY": {
-        "ticker": "BANK NIFTY",
-        "name": "NIFTY Bank Index",
-        "current_price": 47250.75,
-        "change_percent": 1.15,
-        "change_absolute": 538.25,
-        "previous_close": 46712.50,
-        "intraday_high": 47400.00,
-        "intraday_low": 46600.00,
-        "volume": 120000000,
-    },
-    "NIFTY IT": {
-        "ticker": "NIFTY IT",
-        "name": "NIFTY IT Index",
-        "current_price": 35500.00,
-        "change_percent": -0.45,
-        "change_absolute": -160.50,
-        "previous_close": 35660.50,
-        "intraday_high": 35750.00,
-        "intraday_low": 35400.00,
-        "volume": 80000000,
-    },
-    "NIFTY MIDCAP": {
-        "ticker": "NIFTY MIDCAP",
-        "name": "NIFTY Midcap 100",
-        "current_price": 45800.00,
-        "change_percent": 0.95,
-        "change_absolute": 432.25,
-        "previous_close": 45367.75,
-        "intraday_high": 45900.00,
-        "intraday_low": 45200.00,
-        "volume": 95000000,
-    },
+# Map API index names to normalized keys for lookups
+INDEX_NAME_MAP = {
+    "Nifty": "NIFTY",
+    "BSE Sensex": "SENSEX",
+    "GIFT NIFTY": "GIFT NIFTY",
+    "Hang Seng": "HANG SENG",
+    "Nikkei 225": "NIKKEI 225",
+    "DAX": "DAX",
+    "CAC 40": "CAC 40",
+    "FTSE 100": "FTSE 100",
+    "DJIA": "DJIA",
+    "S&P 500": "S&P 500",
+    "Shanghai Composite": "SHANGHAI COMPOSITE",
+    "Taiwan Weighted": "TAIWAN WEIGHTED",
+    "ASX 200": "ASX 200",
+    "KOSPI": "KOSPI",
+    "US Tech 100": "US TECH 100",
 }
+
+# Primary indices for Indian market analysis
+INDIAN_PRIMARY_INDICES = ["NIFTY", "SENSEX", "GIFT NIFTY"]
 
 
 MOCK_NEWS = [
@@ -198,41 +164,164 @@ MOCK_NEWS = [
 
 
 async def fetch_market_indices(
-    indices: List[str],
+    indices: Optional[List[str]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Fetch current market data for specified indices.
+    Fetch current market data for all world indices from CMOTS API.
     
     Args:
-        indices: List of index tickers to fetch
+        indices: Optional list of index names to filter (if None, returns all)
     
     Returns:
-        Dictionary mapping ticker to index data
+        Dictionary mapping normalized index name to index data
+        
+    API Response Format:
+        {
+            "indexname": "BSE Sensex",
+            "Country": "India",
+            "date": "2026-01-30T14:17:00",
+            "close": 82365.62,
+            "Chg": -200.75,
+            "PChg": -0.24,
+            "PrevClose": 82566.37
+        }
     """
     result = {}
-    timestamp = datetime.now(IST)
-
-    for ticker in indices:
-        if ticker in MOCK_INDICES_DATA:
-            data = MOCK_INDICES_DATA[ticker].copy()
-            data["timestamp"] = timestamp.isoformat()
-            result[ticker] = data
-        else:
-            result[ticker] = {
-                "ticker": ticker,
-                "name": ticker,
-                "current_price": 0.0,
-                "change_percent": 0.0,
-                "change_absolute": 0.0,
-                "previous_close": 0.0,
-                "intraday_high": 0.0,
-                "intraday_low": 0.0,
-                "volume": 0,
-                "timestamp": timestamp.isoformat(),
-                "error": f"Index {ticker} not found",
+    
+    try:
+        # Fetch all world indices from API
+        api_response = await fetch_world_indices()
+        raw_indices = api_response.get("data", [])
+        
+        logger.info("fetched_world_indices", count=len(raw_indices))
+        
+        for idx_data in raw_indices:
+            index_name = idx_data.get("indexname", "Unknown")
+            normalized_name = INDEX_NAME_MAP.get(index_name, index_name.upper())
+            
+            # Parse timestamp from API
+            date_str = idx_data.get("date", "")
+            try:
+                timestamp = datetime.fromisoformat(date_str) if date_str else datetime.now(IST)
+            except ValueError:
+                timestamp = datetime.now(IST)
+            
+            # Map API response to our standard format
+            result[normalized_name] = {
+                "ticker": normalized_name,
+                "name": index_name,
+                "country": idx_data.get("Country", "Unknown"),
+                "current_price": float(idx_data.get("close", 0)),
+                "change_percent": float(idx_data.get("PChg", 0)),
+                "change_absolute": float(idx_data.get("Chg", 0)),
+                "previous_close": float(idx_data.get("PrevClose", 0)),
+                "intraday_high": float(idx_data.get("close", 0)),  # API doesn't provide high
+                "intraday_low": float(idx_data.get("close", 0)),   # API doesn't provide low
+                "volume": 0,  # API doesn't provide volume
+                "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp),
             }
+        
+        # Filter by requested indices if provided
+        if indices:
+            # Normalize requested indices for comparison
+            normalized_requested = {idx.upper(): idx for idx in indices}
+            filtered_result = {}
+            
+            for key, data in result.items():
+                if key in normalized_requested:
+                    filtered_result[key] = data
+                # Also check original name match
+                elif data["name"].upper() in normalized_requested:
+                    filtered_result[key] = data
+            
+            # Add placeholder for any requested indices not found
+            for requested_idx in indices:
+                normalized_req = requested_idx.upper()
+                if normalized_req not in filtered_result and requested_idx.upper() not in [d["name"].upper() for d in filtered_result.values()]:
+                    filtered_result[normalized_req] = {
+                        "ticker": normalized_req,
+                        "name": requested_idx,
+                        "country": "Unknown",
+                        "current_price": 0.0,
+                        "change_percent": 0.0,
+                        "change_absolute": 0.0,
+                        "previous_close": 0.0,
+                        "intraday_high": 0.0,
+                        "intraday_low": 0.0,
+                        "volume": 0,
+                        "timestamp": datetime.now(IST).isoformat(),
+                        "error": f"Index {requested_idx} not found in API response",
+                    }
+            
+            return filtered_result
+        
+        return result
+        
+    except Exception as e:
+        logger.error("fetch_market_indices_error", error=str(e))
+        # Return empty result with error for requested indices
+        timestamp = datetime.now(IST)
+        if indices:
+            for idx in indices:
+                result[idx.upper()] = {
+                    "ticker": idx.upper(),
+                    "name": idx,
+                    "country": "Unknown",
+                    "current_price": 0.0,
+                    "change_percent": 0.0,
+                    "change_absolute": 0.0,
+                    "previous_close": 0.0,
+                    "intraday_high": 0.0,
+                    "intraday_low": 0.0,
+                    "volume": 0,
+                    "timestamp": timestamp.isoformat(),
+                    "error": f"API error: {str(e)}",
+                }
+        return result
 
-    return result
+
+async def fetch_all_world_indices() -> Dict[str, Any]:
+    """
+    Fetch all world indices without filtering.
+    
+    Returns:
+        Dictionary with all indices data organized by region
+    """
+    all_indices = await fetch_market_indices(indices=None)
+    
+    # Organize by country/region
+    by_region = {
+        "india": {},
+        "asia": {},
+        "europe": {},
+        "americas": {},
+    }
+    
+    region_map = {
+        "India": "india",
+        "Hong Kong": "asia",
+        "Japan": "asia",
+        "China": "asia",
+        "Taiwan": "asia",
+        "Australia": "asia",
+        "South Korea": "asia",
+        "Germany": "europe",
+        "France": "europe",
+        "United Kingdom": "europe",
+        "United States": "americas",
+    }
+    
+    for ticker, data in all_indices.items():
+        country = data.get("country", "Unknown")
+        region = region_map.get(country, "asia")
+        by_region[region][ticker] = data
+    
+    return {
+        "all_indices": all_indices,
+        "by_region": by_region,
+        "total_count": len(all_indices),
+        "timestamp": datetime.now(IST).isoformat(),
+    }
 
 
 async def get_market_phase() -> Dict[str, Any]:
@@ -296,13 +385,17 @@ async def calculate_index_momentum(
     """
     Calculate market momentum based on index movements.
     
+    Uses NIFTY (or SENSEX as fallback) as the primary index for momentum calculation.
+    
     Args:
         indices_data: Dictionary of index data
     
     Returns:
         Momentum analysis results
     """
-    nifty_data = indices_data.get("NIFTY 50", {})
+    # Try NIFTY first, then SENSEX as fallback
+    nifty_data = indices_data.get("NIFTY", indices_data.get("SENSEX", {}))
+    primary_index = "NIFTY" if "NIFTY" in indices_data else "SENSEX"
     nifty_change = nifty_data.get("change_percent", 0.0)
 
     if nifty_change > 1.0:
@@ -328,14 +421,24 @@ async def calculate_index_momentum(
     total_count = len(indices_data)
     breadth = positive_count / total_count if total_count > 0 else 0.5
 
+    # Add global market sentiment
+    global_indices = ["S&P 500", "DJIA", "US TECH 100", "FTSE 100", "DAX"]
+    global_positive = sum(
+        1 for idx in global_indices
+        if idx in indices_data and indices_data[idx].get("change_percent", 0) > 0
+    )
+    global_count = sum(1 for idx in global_indices if idx in indices_data)
+    global_sentiment = "positive" if global_positive > global_count / 2 else "negative" if global_positive < global_count / 2 else "mixed"
+
     return {
         "momentum": momentum,
         "description": description,
-        "primary_index": "NIFTY 50",
+        "primary_index": primary_index,
         "primary_change_percent": nifty_change,
         "market_breadth": breadth,
         "advancing_indices": positive_count,
         "declining_indices": total_count - positive_count,
+        "global_sentiment": global_sentiment,
     }
 
 
@@ -461,7 +564,7 @@ async def cluster_news_by_topic(
 
 
 async def fetch_market_intelligence(
-    indices: List[str],
+    indices: Optional[List[str]] = None,
     watchlist: Optional[List[str]] = None,
     time_window_hours: int = 24,
     max_articles: int = 50,
@@ -470,14 +573,14 @@ async def fetch_market_intelligence(
     Fetch all market intelligence data in one call.
     
     This is the main service function that combines:
-    - Market indices data
+    - Market indices data (from CMOTS World Indices API)
     - Market phase
     - Market news
     - Stock-specific news (if watchlist provided)
     - News clustering
     
     Args:
-        indices: List of index tickers to fetch
+        indices: Optional list of index tickers to filter (None = all indices)
         watchlist: Optional user watchlist for stock-specific news
         time_window_hours: News time window
         max_articles: Maximum news articles
@@ -488,7 +591,7 @@ async def fetch_market_intelligence(
     # Fetch market phase
     phase_data = await get_market_phase()
     
-    # Fetch indices data
+    # Fetch indices data (all world indices from API)
     indices_data = await fetch_market_indices(indices)
     
     # Calculate momentum
@@ -541,6 +644,7 @@ def get_market_intelligence_tool_handlers() -> Dict[str, Callable]:
     return {
         "fetch_market_intelligence": fetch_market_intelligence,
         "fetch_market_indices": fetch_market_indices,
+        "fetch_all_world_indices": fetch_all_world_indices,
         "get_market_phase": get_market_phase,
         "fetch_market_news": fetch_market_news,
         "cluster_news_by_topic": cluster_news_by_topic,

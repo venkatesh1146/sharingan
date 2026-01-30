@@ -20,9 +20,9 @@ class MarketPulseRequest(BaseModel):
         examples=["user_123"],
     )
     selected_indices: List[str] = Field(
-        default=["NIFTY 50", "SENSEX", "BANK NIFTY"],
-        description="Market indices to analyze",
-        examples=[["NIFTY 50", "SENSEX"]],
+        default=["NIFTY", "SENSEX", "GIFT NIFTY"],
+        description="Market indices to analyze (use NIFTY, SENSEX, S&P 500, DJIA, etc.)",
+        examples=[["NIFTY", "SENSEX", "S&P 500"]],
     )
     include_watchlist: bool = Field(
         default=True,
@@ -67,7 +67,7 @@ class MarketPulseRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "user_id": "user_123",
-                "selected_indices": ["NIFTY 50", "SENSEX", "BANK NIFTY"],
+                "selected_indices": ["NIFTY", "SENSEX", "S&P 500", "DJIA"],
                 "include_watchlist": True,
                 "include_portfolio": True,
                 "news_filter": "all",

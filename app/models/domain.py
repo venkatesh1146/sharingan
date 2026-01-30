@@ -20,8 +20,9 @@ from pydantic import BaseModel, Field, field_validator
 class IndexData(BaseModel):
     """Represents data for a single market index."""
 
-    ticker: str = Field(..., description="Index ticker symbol (e.g., 'NIFTY 50')")
-    name: str = Field(..., description="Full name of the index")
+    ticker: str = Field(..., description="Index ticker symbol (e.g., 'NIFTY', 'SENSEX')")
+    name: str = Field(..., description="Full name of the index (e.g., 'Nifty', 'BSE Sensex')")
+    country: str = Field(default="Unknown", description="Country where the index is based (e.g., 'India', 'United States')")
     current_price: float = Field(..., description="Current price/value of the index")
     change_percent: float = Field(..., description="Percentage change from previous close")
     change_absolute: float = Field(..., description="Absolute change from previous close")

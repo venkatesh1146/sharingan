@@ -108,7 +108,7 @@ class MarketIntelligenceAgent(BaseAgent[MarketIntelligenceAgentInput, MarketInte
             is_trading_day=phase_data.get("is_trading_day"),
         )
 
-        # Step 3: Process indices data
+        # Step 3: Process indices data (from World Indices API)
         raw_indices = intelligence_data["indices_data"]
         indices_data = {}
         for ticker, data in raw_indices.items():
@@ -116,6 +116,7 @@ class MarketIntelligenceAgent(BaseAgent[MarketIntelligenceAgentInput, MarketInte
                 indices_data[ticker] = IndexData(
                     ticker=data["ticker"],
                     name=data.get("name", ticker),
+                    country=data.get("country", "Unknown"),
                     current_price=data["current_price"],
                     change_percent=data["change_percent"],
                     change_absolute=data["change_absolute"],
@@ -131,7 +132,8 @@ class MarketIntelligenceAgent(BaseAgent[MarketIntelligenceAgentInput, MarketInte
         # Step 4: Calculate market outlook (only for pre/post market)
         market_outlook: Optional[MarketOutlook] = None
         if market_phase != "mid":
-            nifty_data = indices_data.get("NIFTY 50")
+            # Use NIFTY (or SENSEX as fallback) for outlook calculation
+            nifty_data = indices_data.get("NIFTY", indices_data.get("SENSEX"))
             if nifty_data:
                 nifty_change = nifty_data.change_percent
 
