@@ -21,7 +21,7 @@ from app.constants.themes import (
 )
 from app.services.cmots_news_service import (
     fetch_world_indices,
-    get_market_news_service,
+    get_cmots_news_service,
 )
 from app.utils.logging import get_logger
 from app.agents.summary_generation_agent import SummaryGenerationAgent
@@ -595,7 +595,7 @@ async def fetch_market_news(
 
     try:
         # Fetch from CMOTS API
-        news_service = get_market_news_service()
+        news_service = get_cmots_news_service()
         api_response = await news_service.fetch_unified_market_news(
             limit=max_articles,
             page=1,
@@ -893,6 +893,86 @@ def _filter_indices_by_phase(
     return filtered
 
 
+def _get_phase_news_type(phase: str) -> str:
+    """
+    Get the news type to fetch based on market phase.
+
+    Args:
+        phase: Market phase ('pre', 'mid', 'post')
+
+    Returns:
+        News type for the phase-specific news API
+    """
+    phase_news_map = {
+        "pre": "pre-market",
+        "mid": "mid-market",
+        "post": "post-market",
+    }
+    return phase_news_map.get(phase, "mid-market")
+
+
+async def fetch_phase_specific_news(
+    phase: str,
+    max_articles: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch phase-specific news (pre-market, mid-market, or post-market).
+
+    Based on the market phase, fetches the appropriate commentary news:
+    - pre: Pre-session market commentary (before market opens)
+    - mid: Mid-session market commentary (during trading hours)
+    - post: End-session market commentary (after market closes)
+
+    Args:
+        phase: Market phase ('pre', 'mid', 'post')
+        max_articles: Maximum number of articles to return
+
+    Returns:
+        List of phase-specific news articles
+    """
+    news_type = _get_phase_news_type(phase)
+
+    try:
+        news_service = get_cmots_news_service()
+        api_response = await news_service.fetch_news_by_type(
+            news_type=news_type,
+            limit=max_articles,
+            page=1,
+            per_page=max_articles,
+        )
+
+        logger.info(
+            "fetched_phase_specific_news",
+            phase=phase,
+            news_type=news_type,
+            total_items=api_response.get("pagination", {}).get("total_items", 0),
+        )
+
+        # Extract news items from the response
+        data_by_type = api_response.get("data", {})
+        phase_news = data_by_type.get(news_type, [])
+
+        # Transform each item to internal format
+        transformed_news = []
+        for item in phase_news:
+            transformed = _transform_news_item(item)
+            # Add phase indicator
+            transformed["phase_news"] = True
+            transformed["phase"] = phase
+            transformed_news.append(transformed)
+
+        return transformed_news
+
+    except Exception as e:
+        logger.error(
+            "fetch_phase_specific_news_error",
+            phase=phase,
+            news_type=news_type,
+            error=str(e),
+        )
+        return []
+
+
 async def fetch_market_intelligence(
     indices: Optional[List[str]] = None,
     watchlist: Optional[List[str]] = None,
@@ -950,8 +1030,18 @@ async def fetch_market_intelligence(
     # Calculate momentum (use all data for accurate calculation)
     momentum_data = await calculate_index_momentum(all_indices_data)
 
+    # Fetch phase-specific news based on market phase (pre/mid/post market commentary)
+    phase_news = await fetch_phase_specific_news(
+        phase=market_phase,
+        max_articles=max_articles,
+    )
+    news = phase_news
+
     # Fetch general market news
-    news = await fetch_market_news(time_window_hours, max_articles)
+    general_news = await fetch_market_news(time_window_hours, max_articles)
+
+    # Combine phase-specific news with general news (phase news first)
+    # news = phase_news + general_news
 
     # Fetch stock-specific news if watchlist provided
     if watchlist:
@@ -971,7 +1061,9 @@ async def fetch_market_intelligence(
         "market_phase": phase_data,
         "indices_data": indices_data,
         "momentum": momentum_data,
-        "news": news,
+        "phase_news": phase_news,  # Phase-specific news (pre/mid/post market commentary)
+        "news": general_news,      # General market news
+        "all_news": news,          # Combined news for clustering
         "themes": themes,
         "timestamp": datetime.now(IST).isoformat(),
     }
@@ -1000,6 +1092,7 @@ def get_market_intelligence_tool_handlers() -> Dict[str, Callable]:
         "fetch_all_world_indices": fetch_all_world_indices,
         "get_market_phase": get_market_phase,
         "fetch_market_news": fetch_market_news,
+        "fetch_phase_specific_news": fetch_phase_specific_news,
         "cluster_news_by_topic": cluster_news_by_topic,
         "calculate_index_momentum": calculate_index_momentum,
         "fetch_stock_specific_news": fetch_stock_specific_news,
