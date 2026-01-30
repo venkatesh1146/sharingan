@@ -16,7 +16,6 @@ import time
 import json
 
 from pydantic import BaseModel
-from google.generativeai.types import Tool
 
 from app.config import get_settings
 from app.utils.logging import AgentLogger
@@ -158,7 +157,7 @@ class BaseAgent(ABC, Generic[InputSchema, OutputSchema]):
         """
         pass
 
-    def get_tools(self) -> Optional[List[Tool]]:
+    def get_tools(self) -> Optional[List[Any]]:
         """
         Return the list of tools available to this agent.
         

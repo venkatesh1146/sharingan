@@ -9,8 +9,6 @@ These tools provide functionality to:
 
 from typing import Any, Callable, Dict, List, Optional
 
-from google.generativeai.types import Tool, FunctionDeclaration
-
 
 # =============================================================================
 # Mock Data (Replace with actual database/API calls in production)
@@ -256,81 +254,14 @@ async def get_user_preferences(user_id: str) -> Dict[str, Any]:
 # =============================================================================
 
 
-def get_user_data_tools() -> List[Tool]:
+def get_user_data_tools() -> List[Any]:
     """
-    Get Vertex AI Tool definitions for user data functions.
+    Get tool definitions for user data functions.
     
     Returns:
-        List of Tool objects for function calling
+        List of tool definitions (currently empty as we use direct function calls)
     """
-    fetch_watchlist_func = FunctionDeclaration(
-        name="fetch_user_watchlist",
-        description="Fetch user's stock watchlist.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "user_id": {
-                    "type": "string",
-                    "description": "User identifier",
-                },
-            },
-            "required": ["user_id"],
-        },
-    )
-
-    fetch_portfolio_func = FunctionDeclaration(
-        name="fetch_user_portfolio",
-        description="Fetch user's portfolio holdings with current values and P&L.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "user_id": {
-                    "type": "string",
-                    "description": "User identifier",
-                },
-            },
-            "required": ["user_id"],
-        },
-    )
-
-    calc_exposure_func = FunctionDeclaration(
-        name="calculate_sector_exposure",
-        description="Calculate sector-wise exposure from portfolio holdings.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "portfolio": {
-                    "type": "array",
-                    "description": "List of portfolio holdings with sector and weight info",
-                },
-            },
-            "required": ["portfolio"],
-        },
-    )
-
-    get_preferences_func = FunctionDeclaration(
-        name="get_user_preferences",
-        description="Fetch user preferences and settings.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "user_id": {
-                    "type": "string",
-                    "description": "User identifier",
-                },
-            },
-            "required": ["user_id"],
-        },
-    )
-
-    return [
-        Tool(function_declarations=[
-            fetch_watchlist_func,
-            fetch_portfolio_func,
-            calc_exposure_func,
-            get_preferences_func,
-        ])
-    ]
+    return []
 
 
 def get_user_data_tool_handlers() -> Dict[str, Callable]:

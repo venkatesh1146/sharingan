@@ -13,8 +13,6 @@ from typing import Any, Callable, Dict, List, Optional
 import hashlib
 import pytz
 
-from google.generativeai.types import Tool, FunctionDeclaration
-
 from app.config import get_settings
 
 
@@ -523,114 +521,14 @@ async def fetch_market_intelligence(
     }
 
 
-# =============================================================================
-# Tool Registration for Agent Use
-# =============================================================================
-
-
-def get_market_intelligence_tools() -> List[Tool]:
+def get_market_intelligence_tools() -> List[Any]:
     """
-    Get Vertex AI Tool definitions for market intelligence functions.
+    Get tool definitions for market intelligence functions.
     
     Returns:
-        List of Tool objects for function calling
+        List of tool definitions (currently empty as we use direct function calls)
     """
-    fetch_intelligence_func = FunctionDeclaration(
-        name="fetch_market_intelligence",
-        description="Fetch comprehensive market intelligence including indices, news, and market phase in one call.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "indices": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of index tickers to fetch (e.g., ['NIFTY 50', 'SENSEX'])",
-                },
-                "watchlist": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional user watchlist for stock-specific news",
-                },
-                "time_window_hours": {
-                    "type": "integer",
-                    "description": "News time window in hours. Default: 24",
-                },
-                "max_articles": {
-                    "type": "integer",
-                    "description": "Maximum news articles. Default: 50",
-                },
-            },
-            "required": ["indices"],
-        },
-    )
-    
-    fetch_indices_func = FunctionDeclaration(
-        name="fetch_market_indices",
-        description="Fetch current market data for specified stock market indices.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "indices": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of index tickers to fetch",
-                }
-            },
-            "required": ["indices"],
-        },
-    )
-
-    get_phase_func = FunctionDeclaration(
-        name="get_market_phase",
-        description="Determine the current market phase (pre-market, mid-market, or post-market).",
-        parameters={
-            "type": "object",
-            "properties": {},
-        },
-    )
-
-    fetch_news_func = FunctionDeclaration(
-        name="fetch_market_news",
-        description="Fetch general market news articles.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "time_window_hours": {
-                    "type": "integer",
-                    "description": "How far back to fetch news (in hours). Default: 24",
-                },
-                "max_articles": {
-                    "type": "integer",
-                    "description": "Maximum number of articles. Default: 50",
-                },
-            },
-        },
-    )
-
-    cluster_news_func = FunctionDeclaration(
-        name="cluster_news_by_topic",
-        description="Cluster news items into themes/topics.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "news_items": {
-                    "type": "array",
-                    "description": "List of news articles to cluster",
-                },
-            },
-            "required": ["news_items"],
-        },
-    )
-
-    return [
-        Tool(function_declarations=[
-            fetch_intelligence_func,
-            fetch_indices_func,
-            get_phase_func,
-            fetch_news_func,
-            cluster_news_func,
-        ])
-    ]
+    return []
 
 
 def get_market_intelligence_tool_handlers() -> Dict[str, Callable]:

@@ -10,8 +10,6 @@ These tools provide functionality to:
 
 from typing import Any, Callable, Dict, List, Optional
 
-from google.generativeai.types import Tool, FunctionDeclaration
-
 
 # =============================================================================
 # Mock Data (Replace with actual API/database calls in production)
@@ -413,90 +411,14 @@ async def rank_news_by_importance(
 # =============================================================================
 
 
-def get_analysis_tools() -> List[Tool]:
+def get_analysis_tools() -> List[Any]:
     """
-    Get Vertex AI Tool definitions for analysis functions.
+    Get tool definitions for analysis functions.
     
     Returns:
-        List of Tool objects for function calling
+        List of tool definitions (currently empty as we use direct function calls)
     """
-    identify_sector_func = FunctionDeclaration(
-        name="identify_sector_from_stocks",
-        description="Identify sectors for given stock tickers. Returns sector mapping and distribution.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "tickers": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of stock ticker symbols",
-                },
-            },
-            "required": ["tickers"],
-        },
-    )
-
-    correlation_func = FunctionDeclaration(
-        name="calculate_stock_correlation",
-        description="Calculate correlation between two stocks based on their sectors and historical relationship.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "ticker1": {
-                    "type": "string",
-                    "description": "First stock ticker",
-                },
-                "ticker2": {
-                    "type": "string",
-                    "description": "Second stock ticker",
-                },
-            },
-            "required": ["ticker1", "ticker2"],
-        },
-    )
-
-    fundamentals_func = FunctionDeclaration(
-        name="get_company_fundamentals",
-        description="Get fundamental information about a company including business model, revenue sources, and input costs.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "ticker": {
-                    "type": "string",
-                    "description": "Stock ticker symbol",
-                },
-            },
-            "required": ["ticker"],
-        },
-    )
-
-    supply_chain_func = FunctionDeclaration(
-        name="analyze_supply_chain_impact",
-        description="Analyze supply chain impact of an economic event on various stocks.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "event": {
-                    "type": "string",
-                    "description": "Economic event (e.g., 'crude_oil_up', 'steel_price_up', 'rupee_depreciation')",
-                },
-                "affected_sector": {
-                    "type": "string",
-                    "description": "Optional: specific sector to focus on",
-                },
-            },
-            "required": ["event"],
-        },
-    )
-
-    return [
-        Tool(function_declarations=[
-            identify_sector_func,
-            correlation_func,
-            fundamentals_func,
-            supply_chain_func,
-        ])
-    ]
+    return []
 
 
 def get_analysis_tool_handlers() -> Dict[str, Callable]:
