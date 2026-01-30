@@ -50,6 +50,8 @@ class Settings(BaseSettings):
 
     # Redis Configuration
     REDIS_URL: str = "redis://localhost:6379"
+    REDIS_CACHE_TTL: int = 7200  # only 2 hours in seconds
+    NEWS_CACHE_PREFIX: str = "allMarketNews"
 
     # Data Source URLs (Placeholders)
     MARKET_DATA_API_URL: str = "https://placeholder.api/market"
