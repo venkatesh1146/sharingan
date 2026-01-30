@@ -85,8 +85,7 @@ class MarketIntelligenceAgent(BaseAgent[MarketIntelligenceAgentInput, MarketInte
         """
         self.logger.info(
             "executing_market_intelligence",
-            selected_indices=input_data.selected_indices,
-            time_window_hours=input_data.time_window_hours,
+            indices_mode="phase_based" if input_data.selected_indices is None else "custom",
             request_id=context.request_id,
         )
 

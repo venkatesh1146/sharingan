@@ -201,7 +201,6 @@ async def generate_market_pulse(
         "pulse_request_received",
         request_id=request_id,
         user_id=request.user_id,
-        indices=request.selected_indices,
     )
 
     # Create execution context

@@ -116,7 +116,6 @@ class OrchestratorAgent:
             "orchestration_started",
             request_id=context.request_id,
             user_id=request.user_id,
-            indices=request.selected_indices,
         )
 
         with trace_orchestration(context.request_id, context.user_id):
@@ -254,10 +253,10 @@ class OrchestratorAgent:
         Phase 1: Market Intelligence (market data + news analysis).
         """
         market_intelligence_input = MarketIntelligenceAgentInput(
-            selected_indices=request.selected_indices,
+            selected_indices=None,  # Phase-based indices (pre/mid/post market)
             timestamp=datetime.utcnow(),
             force_refresh=request.force_refresh,
-            time_window_hours=request.time_window_hours,
+            time_window_hours=24,
             max_articles=request.max_news_items,
             watchlist=None,  # Will be populated if needed
         )
@@ -288,8 +287,8 @@ class OrchestratorAgent:
         # Prepare input with data from Phase 1
         portfolio_insight_input = PortfolioInsightAgentInput(
             user_id=request.user_id,
-            include_watchlist=request.include_watchlist,
-            include_portfolio=request.include_portfolio,
+            include_watchlist=False,
+            include_portfolio=False,
             news_filter=request.news_filter,
             news_items=market_intelligence_output.news_items if market_intelligence_output else [],
             indices_data=market_intelligence_output.indices_data if market_intelligence_output else {},

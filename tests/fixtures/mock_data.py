@@ -22,14 +22,9 @@ def mock_market_pulse_request() -> MarketPulseRequest:
     """Create a mock MarketPulseRequest."""
     return MarketPulseRequest(
         user_id="test_user_123",
-        selected_indices=["NIFTY 50", "SENSEX", "BANK NIFTY"],
-        include_watchlist=True,
-        include_portfolio=True,
         news_filter="all",
         max_news_items=10,
         max_themes=5,
-        include_portfolio_impact=True,
-        time_window_hours=24,
         force_refresh=False,
     )
 

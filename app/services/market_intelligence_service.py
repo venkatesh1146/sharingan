@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, time
 from typing import Any, Callable, Dict, List, Optional
 import asyncio
 import json
+import re
 import pytz
 
 from app.config import get_settings
@@ -19,6 +20,7 @@ from app.constants.themes import (
     MAX_THEMED_NEWS_ITEMS,
     normalize_theme_to_allowed,
 )
+from app.constants.tickers import COMMON_NSE_TICKERS
 from app.services.cmots_news_service import (
     fetch_world_indices,
     get_cmots_news_service,
@@ -482,6 +484,48 @@ async def calculate_index_momentum(
 # =============================================================================
 
 
+def _extract_mentioned_tickers(text: str, candidate_tickers: List[str]) -> List[str]:
+    """
+    Extract stock tickers mentioned in text using word-boundary matching.
+
+    - When watchlist is provided: candidate_tickers = watchlist → only watchlist
+      items that appear in the news are returned.
+    - When watchlist is not provided: candidate_tickers = COMMON_NSE_TICKERS →
+      stocks from the universe that are mentioned in the news.
+
+    Match is case-insensitive and uses word boundaries so "RELIANCE" matches
+    in "Reliance Industries" but "RELI" does not match inside "RELIANCE".
+    Longer tickers are tried first to avoid shorter symbols matching inside
+    longer ones.
+
+    Args:
+        text: Headline + summary (or any string to search).
+        candidate_tickers: List of tickers to look for (e.g. watchlist or universe).
+
+    Returns:
+        List of tickers from candidate_tickers that appear in text (original case from candidate).
+    """
+    if not text or not candidate_tickers:
+        return []
+
+    text_upper = text.upper()
+    # Normalize candidates to uppercase for matching; keep one form for output
+    candidate_upper = {t.upper(): t for t in candidate_tickers}
+    # Sort by length descending so e.g. RELIANCE matches before RELI
+    sorted_tickers = sorted(
+        candidate_upper.keys(),
+        key=len,
+        reverse=True,
+    )
+    found: List[str] = []
+    for ticker in sorted_tickers:
+        # Word boundary: ticker must not be part of a longer word
+        pattern = r"\b" + re.escape(ticker) + r"\b"
+        if re.search(pattern, text_upper):
+            found.append(candidate_upper[ticker])
+    return found
+
+
 def _analyze_sentiment(headline: str, summary: str) -> tuple[str, float]:
     """
     Analyze sentiment from headline and summary text.
@@ -680,22 +724,20 @@ async def fetch_stock_specific_news(
     """
     Fetch news mentioning specific stocks.
 
-    Searches through market news for articles that mention the given tickers
-    in their headline or summary.
+    Uses word-boundary matching so only watchlist tickers that actually appear
+    in headline/summary are included in mentioned_stocks.
 
     Args:
-        tickers: List of stock tickers to search for
+        tickers: List of stock tickers (watchlist) to search for
         time_window_hours: How far back to fetch news
         max_articles: Maximum articles to return
 
     Returns:
-        List of news articles mentioning the specified stocks
+        List of news articles that mention at least one watchlist ticker;
+        each article's mentioned_stocks = only watchlist items that are affected.
     """
     if not tickers:
         return []
-
-    # Normalize tickers for search
-    tickers_upper = [t.upper() for t in tickers]
 
     # Fetch all market news first
     all_news = await fetch_market_news(
@@ -705,24 +747,16 @@ async def fetch_stock_specific_news(
 
     matching_news = []
     for article in all_news:
-        # Search for ticker mentions in headline and summary
-        text = f"{article.get('headline', '')} {article.get('summary', '')}".upper()
-
-        matched_tickers = []
-        for ticker in tickers_upper:
-            # Look for ticker as whole word
-            if ticker in text:
-                matched_tickers.append(ticker)
-
-        if matched_tickers:
+        text = f"{article.get('headline', '')} {article.get('summary', '')}"
+        mentioned = _extract_mentioned_tickers(text, tickers)
+        if mentioned:
             article_copy = article.copy()
-            article_copy["matched_tickers"] = matched_tickers
-            article_copy["mentioned_stocks"] = matched_tickers
+            article_copy["mentioned_stocks"] = mentioned
             matching_news.append(article_copy)
 
     # Sort by relevance (number of matches) and recency
     matching_news.sort(
-        key=lambda x: (len(x.get("matched_tickers", [])), x.get("published_at", "")),
+        key=lambda x: (len(x.get("mentioned_stocks", [])), x.get("published_at", "")),
         reverse=True,
     )
 
@@ -963,6 +997,14 @@ async def fetch_market_intelligence(
         for article in stock_news:
             if article["id"] not in existing_ids:
                 news.append(article)
+
+    # Enrich mentioned_stocks for every article:
+    # - If watchlist provided: only watchlist tickers that appear in the news
+    # - If no watchlist: stocks from common universe that appear in the news
+    ticker_candidates = watchlist if watchlist else COMMON_NSE_TICKERS
+    for article in news:
+        text = f"{article.get('headline', '')} {article.get('summary', '')}"
+        article["mentioned_stocks"] = _extract_mentioned_tickers(text, ticker_candidates)
 
     # Cluster news into themes
     themes = await cluster_news_by_topic(news)

@@ -34,9 +34,9 @@ from app.models.domain import (
 class MarketIntelligenceAgentInput(BaseModel):
     """Input schema for Market Intelligence Agent."""
 
-    selected_indices: List[str] = Field(
-        ...,
-        description="List of index tickers to analyze (e.g., ['NIFTY 50', 'SENSEX'])",
+    selected_indices: Optional[List[str]] = Field(
+        default=None,
+        description="List of index tickers (None = use phase-based indices: pre/mid/post market)",
     )
     timestamp: datetime = Field(
         default_factory=datetime.utcnow,

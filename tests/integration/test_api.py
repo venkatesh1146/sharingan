@@ -78,9 +78,6 @@ class TestPulseEndpoint:
         """Create valid request payload."""
         return {
             "user_id": "test_user_123",
-            "selected_indices": ["NIFTY 50", "SENSEX"],
-            "include_watchlist": True,
-            "include_portfolio": True,
             "news_filter": "all",
             "max_news_items": 10,
         }
