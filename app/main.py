@@ -28,6 +28,7 @@ from app.models.responses import (
 from app.utils.logging import setup_logging, get_logger, bind_request_context
 from app.utils.tracing import setup_tracing
 from app.utils.exceptions import MarketPulseError, OrchestrationError
+from app.services.cmots_news_service import fetch_unified_market_news, fetch_news_by_type
 
 
 # Initialize settings and logging
@@ -42,22 +43,22 @@ orchestrator: Optional[OrchestratorAgent] = None
 async def lifespan(app: FastAPI):
     """
     Application lifespan manager.
-    
+
     Handles startup and shutdown events.
     """
     global orchestrator
-    
+
     # Startup
     logger.info("application_starting", version=__version__)
     setup_logging(settings.LOG_LEVEL)
     setup_tracing()
-    
+
     # Initialize orchestrator
     orchestrator = OrchestratorAgent()
     logger.info("orchestrator_initialized")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("application_shutting_down")
 
@@ -67,10 +68,10 @@ app = FastAPI(
     title="Market Pulse Multi-Agent API",
     description="""
     AI-powered market insights using simplified multi-agent orchestration.
-    
+
     This API coordinates 3 specialized agents to generate comprehensive
     market pulse analysis:
-    
+
     1. **Market Intelligence Agent** - Fetches indices, news, and determines market phase
     2. **Portfolio Insight Agent** - Retrieves user context and analyzes news impact
     3. **Summary Generation Agent** - Creates coherent market narrative
@@ -160,13 +161,13 @@ async def generate_market_pulse(
 ) -> MarketPulseResponse:
     """
     Generate Market Pulse using simplified 3-agent orchestration.
-    
+
     This endpoint coordinates 3 specialized agents to generate:
     - Market outlook and momentum analysis
     - News with impact analysis
     - Portfolio-specific insights
     - Causal market summaries
-    
+
     The orchestrator manages agent execution with:
     - Sequential 3-phase execution
     - Fallback strategies for failures
@@ -174,17 +175,17 @@ async def generate_market_pulse(
     """
     # Generate request ID
     request_id = str(uuid.uuid4())
-    
+
     # Bind request context for logging
     bind_request_context(request_id, request.user_id)
-    
+
     logger.info(
         "pulse_request_received",
         request_id=request_id,
         user_id=request.user_id,
         indices=request.selected_indices,
     )
-    
+
     # Create execution context
     context = AgentExecutionContext(
         request_id=request_id,
@@ -192,11 +193,11 @@ async def generate_market_pulse(
         timestamp=datetime.utcnow(),
         trace_id=request_id,
     )
-    
+
     try:
         # Execute orchestration
         response = await orchestrator.orchestrate(request, context)
-        
+
         # Log analytics in background
         background_tasks.add_task(
             log_analytics,
@@ -204,16 +205,16 @@ async def generate_market_pulse(
             response,
             context,
         )
-        
+
         logger.info(
             "pulse_request_completed",
             request_id=request_id,
             market_phase=response.market_phase,
             degraded_mode=response.degraded_mode,
         )
-        
+
         return response
-        
+
     except OrchestrationError as e:
         logger.error(
             "orchestration_error",
@@ -256,7 +257,7 @@ async def generate_market_pulse(
 async def health_check() -> HealthCheckResponse:
     """
     Health check endpoint with agent status.
-    
+
     Returns the overall health status and individual agent statuses.
     """
     return HealthCheckResponse(
@@ -274,6 +275,117 @@ async def health_check() -> HealthCheckResponse:
 
 
 @app.get(
+    "/api/v1/all-market-news/{records_to_fetch}",
+    summary="All Market News",
+    description="Fetch all market news from all sources with pagination",
+)
+async def get_all_market_news(
+    records_to_fetch: int,
+    page: int = 1,
+    per_page: int = 10,
+    type: Optional[str] = None,
+):
+    """
+    Get all market news from all sources with standardized pagination.
+
+    Combines news from:
+    - Economy News
+    - Other Markets News
+    - Foreign Markets News
+
+    Path Parameters:
+    - records_to_fetch: Number of records to fetch per news type
+
+    Query Parameters:
+    - page: Page number (1-indexed, default: 1)
+    - per_page: Items per page (1-100, default: 10)
+    - type: Filter by news type (economy-news, other-markets, foreign-markets) - optional
+
+    Response includes:
+    - data: News organized by type (economy-news, other-markets, foreign-markets)
+    - pagination: Pagination metadata
+    - errors: Any errors encountered during fetch
+    """
+    logger.info("all_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch, news_type=type)
+
+    try:
+        response = await fetch_unified_market_news(
+            limit=records_to_fetch,
+            page=page,
+            per_page=per_page,
+            news_type=type,
+        )
+        return response
+    except Exception as e:
+        logger.error("all_market_news_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "ALL_MARKET_NEWS_ERROR",
+                "message": str(e),
+            },
+        )
+
+
+@app.get(
+    "/api/v1/news/{news_type}",
+    summary="News by Type",
+    description="Fetch news for a specific type with pagination",
+)
+async def get_news_by_type(
+    news_type: str,
+    page: int = 1,
+    per_page: int = 10,
+    limit: int = 10,
+):
+    """
+    Get news for a specific type with standardized pagination.
+
+    Path Parameters:
+    - news_type: One of 'economy-news', 'other-markets', 'foreign-markets'
+
+    Query Parameters:
+    - page: Page number (1-indexed, default: 1)
+    - per_page: Items per page (1-100, default: 10)
+    - limit: Items to fetch from API (default: 10)
+
+    Response includes:
+    - data: Array of news items for this page
+    - pagination: Pagination metadata (page, total_pages, has_next, etc.)
+    """
+    logger.info("news_by_type_request", news_type=news_type, page=page, per_page=per_page)
+
+    if news_type not in ["economy-news", "other-markets", "foreign-markets"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "INVALID_NEWS_TYPE",
+                "message": "news_type must be one of: economy-news, other-markets, foreign-markets",
+                "received": news_type,
+            },
+        )
+
+    try:
+        response = await fetch_news_by_type(
+            news_type=news_type,
+            limit=limit,
+            page=page,
+            per_page=per_page,
+        )
+        return response
+    except Exception as e:
+        logger.error("news_by_type_error", error=str(e), news_type=news_type)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "NEWS_FETCH_ERROR",
+                "message": str(e),
+                "news_type": news_type,
+            },
+        )
+
+
+@app.get(
     "/api/v1/agents/status",
     response_model=AgentStatusResponse,
     summary="Agent Status",
@@ -282,7 +394,7 @@ async def health_check() -> HealthCheckResponse:
 async def agent_status() -> AgentStatusResponse:
     """
     Get detailed agent status and metrics.
-    
+
     Returns information about each agent including:
     - Operational status
     - Average execution time
@@ -311,7 +423,7 @@ async def agent_status() -> AgentStatusResponse:
             "success_rate": 0.97,
         },
     ]
-    
+
     return AgentStatusResponse(
         agents=agents,
         total_agents=len(agents),
@@ -353,7 +465,7 @@ async def log_analytics(
 ):
     """
     Background task to log analytics.
-    
+
     Records metrics about the request for monitoring and analysis.
     """
     try:
@@ -385,7 +497,7 @@ async def log_analytics(
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         "app.main:app",
         host=settings.API_HOST,

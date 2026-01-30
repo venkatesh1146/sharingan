@@ -34,12 +34,13 @@ from app.models.domain import (
     IndexData,
 )
 from app.prompts.portfolio_insight_prompts import PORTFOLIO_INSIGHT_SYSTEM_PROMPT
-from app.tools.user_data_tools import (
-    fetch_user_watchlist,
-    fetch_user_portfolio,
-    calculate_sector_exposure,
-    get_user_preferences,
-)
+# TODO: Create user_data_tools.py with fetch_user_watchlist, fetch_user_portfolio, etc.
+# from app.tools.user_data_tools import (
+#     fetch_user_watchlist,
+#     fetch_user_portfolio,
+#     calculate_sector_exposure,
+#     get_user_preferences,
+# )
 from app.tools.analysis_tools import (
     analyze_supply_chain_impact,
     get_analysis_tools,

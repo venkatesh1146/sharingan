@@ -9,18 +9,20 @@ from typing import Any, Callable, Dict, List, Optional
 
 from google.generativeai.types import Tool
 
-from app.tools.market_data_tools import (
-    get_market_data_tools,
-    get_market_data_tool_handlers,
-)
-from app.tools.news_tools import (
-    get_news_tools,
-    get_news_tool_handlers,
-)
-from app.tools.user_data_tools import (
-    get_user_data_tools,
-    get_user_data_tool_handlers,
-)
+# TODO: Create market_data_tools.py with get_market_data_tools() and get_market_data_tool_handlers()
+# from app.tools.market_data_tools import (
+#     get_market_data_tools,
+#     get_market_data_tool_handlers,
+# )
+# from app.tools.news_tools import (
+#     get_news_tools,
+#     get_news_tool_handlers,
+# )
+# TODO: Create user_data_tools.py with get_user_data_tools() and get_user_data_tool_handlers()
+# from app.tools.user_data_tools import (
+#     get_user_data_tools,
+#     get_user_data_tool_handlers,
+# )
 from app.tools.analysis_tools import (
     get_analysis_tools,
     get_analysis_tool_handlers,
@@ -42,29 +44,29 @@ class ToolRegistry:
         self._custom_tools: List[Tool] = []
         self._custom_handlers: Dict[str, Callable] = {}
 
-    def get_market_data_tools(self) -> List[Tool]:
-        """Get tools for Market Data Agent."""
-        return get_market_data_tools()
+    # def get_market_data_tools(self) -> List[Tool]:
+    #     """Get tools for Market Data Agent."""
+    #     return get_market_data_tools()
 
-    def get_market_data_handlers(self) -> Dict[str, Callable]:
-        """Get tool handlers for Market Data Agent."""
-        return get_market_data_tool_handlers()
+    # def get_market_data_handlers(self) -> Dict[str, Callable]:
+    #     """Get tool handlers for Market Data Agent."""
+    #     return get_market_data_tool_handlers()
 
-    def get_news_tools(self) -> List[Tool]:
-        """Get tools for News Analysis Agent."""
-        return get_news_tools()
+    # def get_news_tools(self) -> List[Tool]:
+    #     """Get tools for News Analysis Agent."""
+    #     return get_news_tools()
 
-    def get_news_handlers(self) -> Dict[str, Callable]:
-        """Get tool handlers for News Analysis Agent."""
-        return get_news_tool_handlers()
+    # def get_news_handlers(self) -> Dict[str, Callable]:
+    #     """Get tool handlers for News Analysis Agent."""
+    #     return get_news_tool_handlers()
 
-    def get_user_data_tools(self) -> List[Tool]:
-        """Get tools for User Context Agent."""
-        return get_user_data_tools()
+    # def get_user_data_tools(self) -> List[Tool]:
+    #     """Get tools for User Context Agent."""
+    #     return get_user_data_tools()
 
-    def get_user_data_handlers(self) -> Dict[str, Callable]:
-        """Get tool handlers for User Context Agent."""
-        return get_user_data_tool_handlers()
+    # def get_user_data_handlers(self) -> Dict[str, Callable]:
+    #     """Get tool handlers for User Context Agent."""
+    #     return get_user_data_tool_handlers()
 
     def get_analysis_tools(self) -> List[Tool]:
         """Get tools for Impact Analysis Agent."""
@@ -82,9 +84,9 @@ class ToolRegistry:
             Combined list of all tools from all categories
         """
         all_tools = (
-            self.get_market_data_tools() +
-            self.get_news_tools() +
-            self.get_user_data_tools() +
+            # self.get_market_data_tools() +
+            # self.get_news_tools() +
+            # self.get_user_data_tools() +
             self.get_analysis_tools() +
             self._custom_tools
         )
@@ -98,9 +100,9 @@ class ToolRegistry:
             Dictionary mapping tool names to handlers
         """
         all_handlers = {}
-        all_handlers.update(self.get_market_data_handlers())
-        all_handlers.update(self.get_news_handlers())
-        all_handlers.update(self.get_user_data_handlers())
+        # all_handlers.update(self.get_market_data_handlers())
+        # all_handlers.update(self.get_news_handlers())
+        # all_handlers.update(self.get_user_data_handlers())
         all_handlers.update(self.get_analysis_handlers())
         all_handlers.update(self._custom_handlers)
         return all_handlers

@@ -6,6 +6,8 @@ Contains:
 - exceptions: Custom exception classes
 - tracing: OpenTelemetry distributed tracing
 - vertex_ai_client: Vertex AI client wrapper
+- pagination: Standardized pagination utilities
+- funds_api_client: Reusable Wealthy proxy API client
 """
 
 from app.utils.exceptions import (
@@ -18,6 +20,12 @@ from app.utils.exceptions import (
     OrchestrationError,
 )
 from app.utils.logging import setup_logging, get_logger
+from app.utils.pagination import (
+    PaginationMeta,
+    PaginatedResponse,
+    paginate_list,
+    create_paginated_response,
+)
 
 __all__ = [
     # Exceptions
@@ -31,4 +39,9 @@ __all__ = [
     # Logging
     "setup_logging",
     "get_logger",
+    # Pagination
+    "PaginationMeta",
+    "PaginatedResponse",
+    "paginate_list",
+    "create_paginated_response",
 ]

@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     NEWS_API_URL: str = "https://placeholder.api/news"
     USER_DATA_SERVICE_URL: str = "https://placeholder.api/users"
 
+    # Funds Proxy API Configuration
+    FUNDS_API_PROXY_URL: str = "https://fundsapi.wealthy.in/proxy-api/"
+    FUNDS_API_X_TOKEN: str = ""
+    CMOTS_TOKEN: str = ""
+    FUNDS_API_TIMEOUT_SECONDS: int = 30
+
     # Market Phase Times (IST - Indian Standard Time)
     # Pre-market: 08:00 - 09:15
     # Mid-market: 09:15 - 15:30
@@ -72,7 +78,7 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """
     Get cached settings instance.
-    
+
     Uses lru_cache to ensure settings are only loaded once.
     """
     return Settings()
