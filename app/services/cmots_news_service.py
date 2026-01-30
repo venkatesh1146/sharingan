@@ -7,11 +7,12 @@ and combines them into a single unified response with standardized pagination.
 
 from typing import Any, Dict, List, Optional
 from datetime import datetime
+import re
+import asyncio
 
 from app.utils.funds_api_client import call_funds_proxy
 from app.utils.logging import get_logger
 from app.utils.exceptions import DataFetchError
-from app.utils.pagination import create_paginated_response
 
 logger = get_logger(__name__)
 
@@ -22,6 +23,77 @@ NEWS_TYPES = {
     "other-markets": "Other Markets",
     "foreign-markets": "Foreign Markets",
 }
+
+
+def _clean_html(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", " ", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _build_published_at(date_str: Optional[str], time_str: Optional[str]) -> Optional[str]:
+    if not date_str and not time_str:
+        return None
+    date_str = date_str or ""
+    time_str = time_str or ""
+    try:
+        base_dt = datetime.strptime(date_str, "%m/%d/%Y %I:%M:%S %p")
+        if time_str:
+            time_dt = datetime.strptime(time_str, "%H:%M")
+            combined = base_dt.replace(
+                hour=time_dt.hour,
+                minute=time_dt.minute,
+                second=0,
+                microsecond=0,
+            )
+            return combined.isoformat()
+        return base_dt.isoformat()
+    except Exception:
+        combined = f"{date_str} {time_str}".strip()
+        return combined or None
+
+
+async def _fetch_news_details(sno: Optional[str]) -> Optional[str]:
+    if not sno:
+        return None
+    url = f"https://wealthyapis.cmots.com/api/NewsDetails/{sno}"
+    try:
+        response = await call_funds_proxy(
+            method="get",
+            url=url,
+            payload=None,
+        )
+        items = response.get("data", [])
+        if not items:
+            return None
+        detail = items[0]
+        summary = _clean_html(detail.get("arttext", ""))
+        return summary
+    except Exception as e:
+        logger.warning("news_details_failed", sno=sno, error=str(e))
+        return None
+
+
+async def _enrich_item(
+    item: Dict[str, Any],
+    news_type_key: str,
+    semaphore: asyncio.Semaphore,
+) -> Dict[str, Any]:
+    async with semaphore:
+        published_at = _build_published_at(item.get("date"), item.get("time"))
+        summary = await _fetch_news_details(item.get("sno"))
+    enriched_item = {
+        **item,
+        "news_type": NEWS_TYPES.get(news_type_key, news_type_key),
+        "published_at": published_at,
+        "summary": summary,
+        "_type_key": news_type_key,
+    }
+    enriched_item.pop("date", None)
+    enriched_item.pop("time", None)
+    return enriched_item
 
 
 async def fetch_unified_market_news(
@@ -63,7 +135,9 @@ async def fetch_unified_market_news(
     if news_type:
         news_sources = [(t, u) for t, u in news_sources if t == news_type]
 
-    for news_type_key, url in news_sources:
+    semaphore = asyncio.Semaphore(10)
+
+    async def _fetch_source(news_type_key: str, url: str) -> None:
         try:
             logger.info("fetching_news", news_type=news_type_key, url=url)
 
@@ -77,14 +151,13 @@ async def fetch_unified_market_news(
             items = response.get("data", [])
             logger.info("fetched_news_count", news_type=news_type_key, count=len(items))
 
-            # Add news_type to each item
-            for item in items:
-                enriched_item = {
-                    **item,
-                    "news_type": NEWS_TYPES.get(news_type_key, news_type_key),
-                    "raw_news_type": news_type_key,
-                }
-                all_news.append(enriched_item)
+            # Enrich items concurrently (details fetch)
+            tasks = [
+                _enrich_item(item, news_type_key, semaphore)
+                for item in items
+            ]
+            enriched_items = await asyncio.gather(*tasks)
+            all_news.extend(enriched_items)
 
         except DataFetchError as e:
             logger.error(
@@ -107,13 +180,13 @@ async def fetch_unified_market_news(
                 "error": f"Unexpected error: {str(e)}",
             })
 
-    # Sort by date and time (most recent first)
-    # Note: You may need to adjust this based on actual date format
+    await asyncio.gather(*[_fetch_source(t, u) for t, u in news_sources])
+
+    # Sort by published_at (most recent first)
     try:
         all_news.sort(
             key=lambda x: (
-                x.get("date", ""),
-                x.get("time", ""),
+                x.get("published_at", ""),
             ),
             reverse=True,
         )
@@ -124,8 +197,13 @@ async def fetch_unified_market_news(
     data_by_type = {}
     for news_type_key in NEWS_TYPES.keys():
         data_by_type[news_type_key] = [
-            n for n in all_news if n.get("raw_news_type") == news_type_key
+            n for n in all_news if n.get("_type_key") == news_type_key
         ]
+
+    # Remove internal grouping key from output items
+    for items in data_by_type.values():
+        for item in items:
+            item.pop("_type_key", None)
 
     # Calculate pagination for combined data
     total_items = len(all_news)
@@ -187,20 +265,33 @@ async def fetch_news_by_type(
 
         items = response.get("data", [])
 
-        # Add news_type to each item
-        for item in items:
-            item["news_type"] = NEWS_TYPES.get(news_type, news_type)
-            item["raw_news_type"] = news_type
+        # Enrich items concurrently (details fetch)
+        semaphore = asyncio.Semaphore(10)
+        tasks = [
+            _enrich_item(item, news_type, semaphore)
+            for item in items
+        ]
+        items = await asyncio.gather(*tasks)
 
         # Apply pagination
-        return create_paginated_response(
-            items=items,
-            page=page,
-            per_page=per_page,
-            news_type=NEWS_TYPES.get(news_type, news_type),
-            raw_news_type=news_type,
-            fetched_at=datetime.utcnow().isoformat(),
-        )
+        for item in items:
+            item.pop("_type_key", None)
+
+        return {
+            "data": items,
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total_items": len(items),
+                "total_pages": (len(items) + per_page - 1) // per_page if per_page > 0 else 1,
+                "has_next": page < ((len(items) + per_page - 1) // per_page if per_page > 0 else 1),
+                "has_prev": page > 1,
+                "next_page": page + 1 if page < ((len(items) + per_page - 1) // per_page if per_page > 0 else 1) else None,
+                "prev_page": page - 1 if page > 1 else None,
+            },
+            "news_type": NEWS_TYPES.get(news_type, news_type),
+            "fetched_at": datetime.utcnow().isoformat(),
+        }
 
     except Exception as e:
         logger.error(
