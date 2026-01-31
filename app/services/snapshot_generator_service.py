@@ -8,6 +8,7 @@ Provides:
 - Trending news selection
 """
 
+from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 import json
 
@@ -122,6 +123,25 @@ class MarketSummaryBulletResponse(BaseModel):
         return "neutral"
 
 
+class ThemedItemResponse(BaseModel):
+    """Impacted theme/sector item (matches ThemedItemDocument shape)."""
+    sector: str = Field(default="", description="Theme or sector name")
+    relevant_companies: List[str] = Field(default_factory=list)
+    sentiment: Literal["bullish", "bearish", "neutral"] = "neutral"
+    sentiment_score: Optional[float] = Field(default=None, description="Optional 0.0-1.0")
+
+    @field_validator("sentiment", mode="before")
+    @classmethod
+    def normalize_sentiment(cls, v):
+        if isinstance(v, str):
+            v_lower = v.lower().strip()
+            if v_lower in ("bullish", "positive", "up"):
+                return "bullish"
+            elif v_lower in ("bearish", "negative", "down"):
+                return "bearish"
+        return "neutral"
+
+
 class SnapshotAIResponse(BaseModel):
     """Complete structured response from AI for snapshot generation."""
     market_outlook: Optional[MarketOutlookResponse] = Field(
@@ -136,7 +156,11 @@ class SnapshotAIResponse(BaseModel):
         default="",
         description="2-3 sentence executive summary"
     )
-    
+    themed: List[ThemedItemResponse] = Field(
+        default_factory=list,
+        description="Impacted themes with sector, companies, sentiment",
+    )
+
     @classmethod
     def from_raw_response(
         cls,
@@ -176,11 +200,27 @@ class SnapshotAIResponse(BaseModel):
             exec_summary = data.get("executive_summary", "")
             if not isinstance(exec_summary, str):
                 exec_summary = str(exec_summary) if exec_summary else ""
+
+            # Parse themed (impacted themes: sector, relevant_companies, sentiment, sentiment_score)
+            themed_list: List[ThemedItemResponse] = []
+            if data.get("themed") and isinstance(data["themed"], list):
+                for t in data["themed"]:
+                    if isinstance(t, dict) and t.get("sector"):
+                        try:
+                            themed_list.append(ThemedItemResponse(
+                                sector=str(t.get("sector", "")),
+                                relevant_companies=list(t.get("relevant_companies", [])) if isinstance(t.get("relevant_companies"), list) else [],
+                                sentiment=t.get("sentiment", "neutral"),
+                                sentiment_score=t.get("sentiment_score") if t.get("sentiment_score") is not None else None,
+                            ))
+                        except Exception:
+                            continue
             
             return cls(
                 market_outlook=outlook,
                 market_summary=bullets,
                 executive_summary=exec_summary,
+                themed=themed_list,
             )
             
         except Exception:
@@ -193,6 +233,7 @@ class SnapshotAIResponse(BaseModel):
             "market_outlook": None,
             "market_summary": [],
             "executive_summary": self.executive_summary or None,
+            "themed": [],
         }
         
         if self.market_outlook:
@@ -212,6 +253,16 @@ class SnapshotAIResponse(BaseModel):
                     "confidence": bullet.confidence,
                     "sentiment": bullet.sentiment,
                 })
+
+        for t in self.themed:
+            item: Dict[str, Any] = {
+                "sector": t.sector,
+                "relevant_companies": t.relevant_companies,
+                "sentiment": t.sentiment,
+            }
+            if t.sentiment_score is not None:
+                item["sentiment_score"] = t.sentiment_score
+            result["themed"].append(item)
         
         return result
 
@@ -259,39 +310,39 @@ class SnapshotGeneratorService:
             "market_summary": [],
             "executive_summary": None,
             "trending_now": None,
+            "themed": [],
         }
         
         # Get NIFTY/SENSEX data for context
         nifty = indices_data.get("NIFTY", indices_data.get("SENSEX", {}))
         nifty_change = nifty.get("change_percent", 0) if nifty else 0
         
-        if market_phase == "mid":
-            # Mid-market: Generate trending news
-            result["trending_now"] = self._select_trending(news_items)
-            result["executive_summary"] = "Market activity ongoing. Key developments being monitored."
-        else:
-            # Pre/Post market: Generate full analysis
-            ai_result = await self._generate_ai_snapshot(
-                market_phase, indices_data, news_items, previous_snapshot
+        # Generate market outlook and summary on all phases (pre, mid, post)
+        ai_result = await self._generate_ai_snapshot(
+            market_phase, indices_data, news_items, previous_snapshot
+        )
+        if ai_result:
+            result.update(ai_result)
+            self.logger.info(
+                "snapshot_generated_with_ai",
+                market_phase=market_phase,
             )
-            
-            if ai_result:
-                result.update(ai_result)
-                self.logger.info(
-                    "snapshot_generated_with_ai",
-                    market_phase=market_phase,
-                )
-            else:
-                # Fall back to rule-based generation
-                self.logger.info(
-                    "snapshot_fallback_to_rules",
-                    market_phase=market_phase,
-                    reason="AI generation failed or returned empty",
-                )
-                fallback_result = self._generate_rule_based_snapshot(
-                    market_phase, indices_data, news_items
-                )
-                result.update(fallback_result)
+        else:
+            self.logger.info(
+                "snapshot_fallback_to_rules",
+                market_phase=market_phase,
+                reason="AI generation failed or returned empty",
+            )
+            fallback_result = self._generate_rule_based_snapshot(
+                market_phase, indices_data, news_items
+            )
+            result.update(fallback_result)
+        
+        # Mid-market: also populate trending_now from top impacting news
+        if market_phase == "mid":
+            result["trending_now"] = self._select_trending_by_impact(news_items)
+            if not result.get("executive_summary"):
+                result["executive_summary"] = "Market activity ongoing. Key developments being monitored."
         
         return result
 
@@ -389,7 +440,7 @@ class SnapshotGeneratorService:
         
         phase_context = {
             "pre": "Pre-Market (07:00–09:15 IST). Focus on overnight developments and opening expectations. Market outlook is ALLOWED; derive it ONLY from NIFTY 50.",
-            "mid": "Mid-Market (09:15–15:30 IST). Do NOT generate market outlook. Focus on live, fast-moving developments and factual structure only.",
+            "mid": "Mid-Market (09:15–15:30 IST). Focus on live, fast-moving developments and factual structure. Market outlook is ALLOWED; derive it ONLY from NIFTY 50.",
             "post": "Post-Market (15:30–07:00 IST). Summarize the day's key movements and drivers. Market outlook is ALLOWED; derive it ONLY from NIFTY 50.",
         }
         
@@ -414,10 +465,9 @@ Market phase controls what signals are allowed downstream.
 {phase_context.get(market_phase, '')}
 
 MARKET OUTLOOK (STRICT RULES)
-- Compute market outlook ONLY in Pre-Market and Post-Market.
+- Compute market outlook in all phases (Pre-Market, Mid-Market, Post-Market).
 - Market outlook is derived ONLY from NIFTY 50 movement.
 - Allowed values: bullish | bearish | neutral.
-- DO NOT generate market outlook when phase is Mid-Market.
 
 MARKET DATA
 Indian indices (primary): NIFTY 50, SENSEX, sectoral. Use for outlook and reasoning.
@@ -437,7 +487,7 @@ CONSTRAINTS
 OUTPUT CONTRACT (STRICT)
 Return ONLY a valid JSON object with the following structure. No other text.
 
-1. "market_outlook": Include ONLY for pre or post phase. Omit or null for mid. {{
+1. "market_outlook": Include for all phases (pre, mid, post). {{
      "sentiment": "bullish" | "bearish" | "neutral",
      "confidence": 0.0-1.0,
      "reasoning": "2-3 sentence factual explanation",
@@ -455,6 +505,13 @@ Return ONLY a valid JSON object with the following structure. No other text.
    Good: "Markets closed higher driven by positive global cues following US market rally"
 
 3. "executive_summary": A 2-3 sentence internal overview of the market (structured intelligence, not user-facing copy).
+
+4. "themed": Array of impacted themes/sectors (ALWAYS include when relevant). Each item:
+   - "sector": Theme or sector name (e.g. "Banking", "IT", "Auto")
+   - "relevant_companies": List of company names or tickers mentioned for this theme
+   - "sentiment": "bullish" | "bearish" | "neutral"
+   - "sentiment_score": Optional number 0.0-1.0 (strength of sentiment; omit if unknown)
+   Include 0-10 themed items based on news and indices. Omit "themed" or use [] if none identified.
 
 Return ONLY valid JSON, no other text."""
 
@@ -657,21 +714,41 @@ Return ONLY valid JSON, no other text."""
             f"Markets trading {direction} with NIFTY at {nifty_change:.1f}%. "
             "Key developments being monitored."
         )
+
+        result["themed"] = []
         
         return result
 
-    def _select_trending(
+    def _select_trending_by_impact(
         self,
         news_items: List[NewsArticleDocument],
     ) -> List[str]:
-        """Select trending news IDs for mid-market."""
-        # Sort by published_at (most recent first)
+        """Select trending news IDs for mid-market based on top impacting news."""
+        if not news_items:
+            return []
+
+        def _mag(s: Any) -> str:
+            if hasattr(s, "impact_magnitude"):
+                return getattr(s, "impact_magnitude", "medium") or "medium"
+            return (s.get("impact_magnitude", "medium") if isinstance(s, dict) else "medium")
+
+        def impact_score(n: NewsArticleDocument) -> tuple:
+            # (breaking first, has_impact, high_impact_count, medium_impact_count, sentiment_magnitude, recency)
+            breaking = 1 if getattr(n, "is_breaking", False) else 0
+            impacted = getattr(n, "impacted_stocks", None) or []
+            high = sum(1 for s in impacted if _mag(s) == "high")
+            medium = sum(1 for s in impacted if _mag(s) == "medium")
+            has_impact = 1 if (impacted or getattr(n, "sector_impacts", None)) else 0
+            sentiment_mag = abs(getattr(n, "sentiment_score", 0) or 0)
+            ts = getattr(n, "published_at", None)
+            recency = ts.timestamp() if ts and hasattr(ts, "timestamp") else 0.0
+            return (breaking, has_impact, high, medium, sentiment_mag, recency)
+
         sorted_news = sorted(
             news_items,
-            key=lambda x: x.published_at,
+            key=impact_score,
             reverse=True,
         )
-        
         return [n.news_id for n in sorted_news[:5]]
 
     def _has_causal_language(self, text: str) -> bool:

@@ -60,31 +60,36 @@ INDEX_NAME_MAP = {
 # Primary indices for Indian market analysis
 INDIAN_PRIMARY_INDICES = ["NIFTY", "SENSEX", "GIFT NIFTY"]
 
-# Phase-specific indices to show in the response
-# Pre-market: Show global indices that trade before Indian markets open
+# Phase-specific indices to show in market summary (stored per phase)
+# Pre-market: Sensex, Nifty, Shanghai Composite, Nikkei, DJIA, S&P 500, GIFT Nifty
 PRE_MARKET_INDICES = [
-    "GIFT NIFTY",   # GIFT Nifty (pre-market indicator)
-    "NIKKEI 225",   # Japan - Nikkei
-    "FTSE 100",     # UK - FTSE 100
-    "SHANGHAI COMPOSITE",  # China - Shanghai Composite
-    "DAX",          # Germany - DAX
+    "SENSEX",
+    "NIFTY",
+    "SHANGHAI COMPOSITE",
+    "NIKKEI 225",
+    "DJIA",
+    "S&P 500",
+    "GIFT NIFTY",
 ]
 
-# Post-market: Show indices relevant after Indian markets close
-POST_MARKET_INDICES = [
-    "SENSEX",       # BSE Sensex (Indian)
-    "NIFTY",        # Nifty 50 (Indian)
-    "SHANGHAI COMPOSITE",  # China - Shanghai Composite
-    "NIKKEI 225",   # Japan - Nikkei
-    "FTSE 100",     # UK - FTSE 100
-    "DJIA",         # US - Dow Jones
-    "S&P 500",      # US - S&P 500
-]
-
-# Mid-market: Show Indian indices primarily
+# Mid-market: Sensex, Nifty, S&P 500, Nikkei, Shanghai Composite
 MID_MARKET_INDICES = [
-    "SENSEX",       # BSE Sensex
-    "NIFTY",        # Nifty 50
+    "SENSEX",
+    "NIFTY",
+    "S&P 500",
+    "NIKKEI 225",
+    "SHANGHAI COMPOSITE",
+]
+
+# Post-market: Sensex, Nifty, Shanghai Composite, Nikkei, DJIA, S&P 500, GIFT Nifty
+POST_MARKET_INDICES = [
+    "SENSEX",
+    "NIFTY",
+    "SHANGHAI COMPOSITE",
+    "NIKKEI 225",
+    "DJIA",
+    "S&P 500",
+    "GIFT NIFTY",
 ]
 
 
@@ -634,19 +639,18 @@ async def fetch_market_news(
     """
     cutoff_time = datetime.now(IST) - timedelta(hours=time_window_hours)
 
-    # Map categories to news_type filter
-    news_type_filter = None
-    if categories and len(categories) == 1:
-        news_type_filter = categories[0]
+    # When single category is a market phase (pre/mid/post), filter at fetch; else fetch all and filter below
+    market_phase_filter = None
+    if categories and len(categories) == 1 and categories[0] in ("pre", "mid", "post"):
+        market_phase_filter = categories[0]
 
     try:
-        # Fetch from CMOTS API
         news_service = get_cmots_news_service()
         api_response = await news_service.fetch_unified_market_news(
             limit=max_articles,
             page=1,
             per_page=max_articles,
-            news_type=news_type_filter,
+            market_phase=market_phase_filter,
         )
 
         logger.info(
@@ -929,32 +933,13 @@ def _filter_indices_by_phase(
     return filtered
 
 
-def _get_phase_news_type(phase: str) -> str:
-    """
-    Get the news type to fetch based on market phase.
-
-    Args:
-        phase: Market phase ('pre', 'mid', 'post')
-
-    Returns:
-        News type for the phase-specific news API
-    """
-    phase_news_map = {
-        "pre": "pre-market",
-        "mid": "mid-market",
-        "post": "post-market",
-    }
-    return phase_news_map.get(phase, "mid-market")
-
-
 async def fetch_phase_specific_news(
     phase: str,
     max_articles: int = 20,
 ) -> List[Dict[str, Any]]:
     """
-    Fetch phase-specific news (pre-market, mid-market, or post-market).
+    Fetch phase-specific news by market phase (pre, mid, post).
 
-    Based on the market phase, fetches the appropriate commentary news:
     - pre: Pre-session market commentary (before market opens)
     - mid: Mid-session market commentary (during trading hours)
     - post: End-session market commentary (after market closes)
@@ -966,27 +951,23 @@ async def fetch_phase_specific_news(
     Returns:
         List of phase-specific news articles
     """
-    news_type = _get_phase_news_type(phase)
-
     try:
         news_service = get_cmots_news_service()
-        api_response = await news_service.fetch_news_by_type(
-            news_type=news_type,
+        api_response = await news_service.fetch_unified_market_news(
             limit=max_articles,
             page=1,
             per_page=max_articles,
+            market_phase=phase,
         )
 
         logger.info(
             "fetched_phase_specific_news",
             phase=phase,
-            news_type=news_type,
             total_items=api_response.get("pagination", {}).get("total_items", 0),
         )
 
-        # Extract news items from the response
         data_by_type = api_response.get("data", {})
-        phase_news = data_by_type.get(news_type, [])
+        phase_news = data_by_type.get(phase, [])
 
         # Transform each item to internal format
         transformed_news = []
@@ -1003,10 +984,73 @@ async def fetch_phase_specific_news(
         logger.error(
             "fetch_phase_specific_news_error",
             phase=phase,
-            news_type=news_type,
             error=str(e),
         )
         return []
+
+
+def build_themed_from_news(
+    news_items: List[NewsArticleDocument],
+) -> List[Dict[str, Any]]:
+    """
+    Build themed list (sector, relevant_companies, sentiment) from news.
+    Populated only when sector is identified (mentioned_sectors or sector_impacts).
+    """
+    # sector -> { companies: set, sentiments: list }
+    by_sector: Dict[str, Dict[str, Any]] = {}
+    for n in news_items:
+        sectors_raw = list(getattr(n, "mentioned_sectors", None) or [])
+        sector_impacts = getattr(n, "sector_impacts", None) or {}
+        for s in sector_impacts:
+            if s and s not in sectors_raw:
+                sectors_raw.append(s)
+        companies = list(set(
+            list(getattr(n, "mentioned_companies", None) or [])
+            + list(getattr(n, "mentioned_stocks", None) or [])
+        ))
+        art_sentiment = (getattr(n, "sentiment", None) or "neutral").lower()
+        if art_sentiment not in ("bullish", "bearish", "neutral"):
+            art_sentiment = "neutral"
+        for s in sectors_raw:
+            if not s or not isinstance(s, str):
+                continue
+            normalized = normalize_theme_to_allowed(s.strip())
+            if not normalized:
+                continue
+            if normalized not in by_sector:
+                by_sector[normalized] = {"companies": set(), "sentiments": []}
+            by_sector[normalized]["companies"].update(c for c in companies if c)
+            sector_sent = sector_impacts.get(s, art_sentiment)
+            if isinstance(sector_sent, str):
+                if sector_sent == "positive":
+                    sector_sent = "bullish"
+                elif sector_sent == "negative":
+                    sector_sent = "bearish"
+                elif sector_sent not in ("bullish", "bearish", "neutral"):
+                    sector_sent = art_sentiment
+            else:
+                sector_sent = art_sentiment
+            by_sector[normalized]["sentiments"].append(sector_sent)
+    result: List[Dict[str, Any]] = []
+    for sector, data in by_sector.items():
+        sentiments = data["sentiments"]
+        if not sentiments:
+            sent = "neutral"
+        else:
+            bullish_c = sum(1 for x in sentiments if x == "bullish")
+            bearish_c = sum(1 for x in sentiments if x == "bearish")
+            if bullish_c > bearish_c:
+                sent = "bullish"
+            elif bearish_c > bullish_c:
+                sent = "bearish"
+            else:
+                sent = "neutral"
+        result.append({
+            "sector": sector,
+            "relevant_companies": sorted(data["companies"])[:20],
+            "sentiment": sent,
+        })
+    return result
 
 
 def phase_news_to_documents(

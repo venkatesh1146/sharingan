@@ -21,14 +21,14 @@ from app.config import get_settings
 logger = get_logger(__name__)
 
 
-# News type categories
+# News type categories. Session news uses market_phase enum: pre, mid, post.
 NEWS_TYPES = {
     "economy-news": "Economy",
     "other-markets": "Other Markets",
     "foreign-markets": "Foreign Markets",
-    "mid-market": "Mid-Session",
-    "pre-market": "Pre-Session",
-    "post-market": "End-Session",
+    "pre": "Pre-Session",
+    "mid": "Mid-Session",
+    "post": "End-Session",
 }
 
 
@@ -313,49 +313,39 @@ class CMOTSNewsService:
         limit: int = 10,
         page: int = 1,
         per_page: int = 10,
-        news_type: Optional[str] = None,
+        market_phase: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Fetch unified market news from all sources with pagination.
 
-        Calls 6 endpoints:
-        - Economy News
-        - Other Markets News
-        - Foreign Markets News
-        - Mid-Session News
-        - Pre-Session News
-        - End-Session News
-
-        Combines all results with a news_type field and applies standardized pagination.
+        Calls 6 endpoints: economy-news, other-markets, foreign-markets, and session news by market_phase (pre, mid, post).
 
         Args:
-            limit: Number of items per news type to fetch from API (default: 10)
+            limit: Number of items per source to fetch from API (default: 10)
             page: Page number for pagination (1-indexed, default: 1)
             per_page: Items per page (1-100, default: 10)
-            news_type: Filter by specific news type (optional)
+            market_phase: Optional filter by market phase (pre/mid/post). If set, only that session is fetched.
 
         Returns:
-            Dictionary with paginated data and pagination metadata
+            Dictionary with paginated data. Data keys: economy-news, other-markets, foreign-markets, pre, mid, post.
         """
         all_news = []
 
-        # Fetch from all 6 sources
+        # All 6 sources; session sources use market_phase enum (pre, mid, post)
         news_sources = [
             ("economy-news", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/economy-news/{limit}"),
             ("other-markets", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/other-markets/{limit}"),
             ("foreign-markets", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/foreign-markets/{limit}"),
-            ("mid-market", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/mid-session/{limit}"),
-            ("pre-market", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/pre-session/{limit}"),
-            ("post-market", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/end-session/{limit}"),
+            ("pre", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/pre-session/{limit}"),
+            ("mid", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/mid-session/{limit}"),
+            ("post", f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/end-session/{limit}"),
         ]
 
-        # Filter news sources if a specific type is requested
-        if news_type:
-            news_sources = [(t, u) for t, u in news_sources if t == news_type]
+        if market_phase:
+            news_sources = [(k, u) for k, u in news_sources if k == market_phase]
 
         semaphore = asyncio.Semaphore(10)
 
-        # Fetch all sources concurrently
         await asyncio.gather(
             *[
                 self._fetch_source(t, u, semaphore, all_news)
@@ -363,7 +353,6 @@ class CMOTSNewsService:
             ]
         )
 
-        # Sort by published_at (most recent first)
         try:
             all_news.sort(
                 key=lambda x: (x.get("published_at", "")),
@@ -376,7 +365,7 @@ class CMOTSNewsService:
             all_news,
             page,
             per_page,
-            news_type,
+            market_phase,
         )
 
     def _apply_pagination_and_filter(
@@ -384,25 +373,23 @@ class CMOTSNewsService:
         all_news: List[Dict[str, Any]],
         page: int,
         per_page: int,
-        news_type: Optional[str] = None,
+        market_phase: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Apply pagination and type filtering to news data.
+        Apply pagination and optional filter by market_phase.
 
         Args:
             all_news: Full list of news items
             page: Page number (1-indexed)
             per_page: Items per page
-            news_type: Optional filter by news type
+            market_phase: Optional filter by market phase (pre/mid/post) or source key
 
         Returns:
             Paginated and filtered response dictionary
         """
-        # Filter by news type if specified
-        if news_type:
-            all_news = [n for n in all_news if n.get("_type_key") == news_type]
+        if market_phase:
+            all_news = [n for n in all_news if n.get("_type_key") == market_phase]
 
-        # Organize news by type
         data_by_type = {}
         for type_key in self.news_types.keys():
             data_by_type[type_key] = [
@@ -447,7 +434,7 @@ class CMOTSNewsService:
         Fetch news for a specific type with pagination.
 
         Args:
-            news_type: "economy-news", "other-markets", "foreign-markets", "mid-market", "pre-market", or "post-market"
+            news_type: economy-news, other-markets, foreign-markets, or market_phase (pre, mid, post)
             limit: Number of items to fetch from API
             page: Page number for pagination (1-indexed)
             per_page: Items per page (1-100)
@@ -460,12 +447,12 @@ class CMOTSNewsService:
                 f"Invalid news_type. Must be one of: {', '.join(self.news_types.keys())}"
             )
 
-        # Map news types to their API endpoints
-        if news_type == "mid-market":
+        # Session endpoints by market_phase (pre, mid, post)
+        if news_type == "mid":
             url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/mid-session/{limit}"
-        elif news_type == "pre-market":
+        elif news_type == "pre":
             url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/pre-session/{limit}"
-        elif news_type == "post-market":
+        elif news_type == "post":
             url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/end-session/{limit}"
         else:
             url = f"https://wealthyapis.cmots.com/api/CapitalMarketLiveNews/{news_type}/{limit}"

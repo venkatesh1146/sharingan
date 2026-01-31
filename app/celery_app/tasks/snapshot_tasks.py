@@ -60,7 +60,7 @@ def generate_market_snapshot(
     Runs every 30 minutes via Celery Beat or on-demand.
     
     Args:
-        market_phase: Optional phase override (pre/mid/post)
+        market_phase: Optional phase (pre/mid/post). If not provided, calculated from current time (IST).
         force: Force generation even if recent snapshot exists
         
     Returns:
@@ -95,6 +95,7 @@ async def _generate_snapshot_async(
         MarketOutlookDocument,
         IndexDataDocument,
         MarketSummaryBulletDocument,
+        ThemedItemDocument,
     )
     from app.services.market_intelligence_service import (
         get_market_phase,
@@ -102,6 +103,7 @@ async def _generate_snapshot_async(
         fetch_phase_specific_news,
         _filter_indices_by_phase,
         phase_news_to_documents,
+        build_themed_from_news,
     )
     from app.agents import get_snapshot_generation_agent
     
@@ -112,7 +114,7 @@ async def _generate_snapshot_async(
     snapshot_repo = get_snapshot_repository()
     news_repo = get_news_repository()
     
-    # Determine market phase
+    # Use provided market_phase or calculate from current time (IST)
     if not market_phase:
         phase_data = await get_market_phase()
         market_phase = phase_data["phase"]
@@ -215,9 +217,9 @@ async def _generate_snapshot_async(
                 else datetime.utcnow(),
             ))
     
-    # Build market outlook (for pre/post only)
+    # Build market outlook (all phases: pre, mid, post)
     market_outlook = None
-    if market_phase != "mid" and snapshot_content.get("market_outlook"):
+    if snapshot_content.get("market_outlook"):
         outlook = snapshot_content["market_outlook"]
         market_outlook = MarketOutlookDocument(
             sentiment=outlook.get("sentiment", "neutral"),
@@ -237,6 +239,22 @@ async def _generate_snapshot_async(
             sentiment=bullet.get("sentiment", "neutral"),
         ))
     
+    # Themed: use AI-generated themed from snapshot content when present, else build from news
+    themed_raw = snapshot_content.get("themed")
+    if themed_raw and isinstance(themed_raw, list):
+        themed_docs = []
+        for t in themed_raw:
+            if isinstance(t, dict) and t.get("sector"):
+                themed_docs.append(ThemedItemDocument(
+                    sector=str(t["sector"]),
+                    relevant_companies=list(t.get("relevant_companies", [])) if isinstance(t.get("relevant_companies"), list) else [],
+                    sentiment=t.get("sentiment", "neutral"),
+                    sentiment_score=t.get("sentiment_score"),
+                ))
+    else:
+        themed_raw = build_themed_from_news(recent_news)
+        themed_docs = [ThemedItemDocument(**t) for t in themed_raw]
+    
     # Create snapshot document
     snapshot = MarketSnapshotDocument(
         snapshot_id=snapshot_id,
@@ -246,6 +264,7 @@ async def _generate_snapshot_async(
         market_summary=summary_bullets,
         executive_summary=snapshot_content.get("executive_summary"),
         trending_now=snapshot_content.get("trending_now") if market_phase == "mid" else None,
+        themed=themed_docs,
         all_news_ids=[n.news_id for n in recent_news],
         expires_at=datetime.utcnow() + timedelta(seconds=settings.SNAPSHOT_TTL_SECONDS),
     )

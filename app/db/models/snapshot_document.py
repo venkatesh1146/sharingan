@@ -46,6 +46,18 @@ class MarketSummaryBulletDocument(BaseModel):
     sentiment: Literal["bullish", "bearish", "neutral"] = "neutral"
 
 
+class ThemedItemDocument(BaseModel):
+    """Themed sector item: sector, relevant companies, sentiment (populated when sector identified)."""
+    
+    sector: str = Field(..., description="Sector name")
+    relevant_companies: List[str] = Field(default_factory=list)
+    sentiment: Literal["bullish", "bearish", "neutral"] = "neutral"
+    sentiment_score: Optional[float] = Field(
+        default=None,
+        description="Optional numeric sentiment score (e.g. 0.0-1.0 from AI)",
+    )
+
+
 class MarketSnapshotDocument(BaseModel):
     """
     MongoDB document schema for market_snapshots collection.
@@ -72,7 +84,7 @@ class MarketSnapshotDocument(BaseModel):
     # Market analysis
     market_outlook: Optional[MarketOutlookDocument] = Field(
         None, 
-        description="Market outlook (null during mid-market)"
+        description="Market outlook (all phases)"
     )
     
     # Indices data
@@ -95,6 +107,12 @@ class MarketSnapshotDocument(BaseModel):
     trending_now: Optional[List[str]] = Field(
         None,
         description="Trending news IDs (mid-market only)"
+    )
+    
+    # Themed: sector, relevant companies, sentiment (populated when sectors identified)
+    themed: List[ThemedItemDocument] = Field(
+        default_factory=list,
+        description="Themed sectors with relevant companies and sentiment"
     )
     
     # All news referenced
@@ -127,6 +145,7 @@ class MarketSnapshotDocument(BaseModel):
         
         data["indices_data"] = [dict(idx) for idx in data.get("indices_data", [])]
         data["market_summary"] = [dict(ms) for ms in data.get("market_summary", [])]
+        data["themed"] = [dict(t) for t in data.get("themed", [])]
         
         return data
 

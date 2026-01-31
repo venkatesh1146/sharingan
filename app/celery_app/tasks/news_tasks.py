@@ -8,7 +8,7 @@ Handles:
 """
 
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from celery import shared_task
 from celery.utils.log import get_task_logger
@@ -48,7 +48,9 @@ def run_async(coro):
     max_retries=3,
     default_retry_delay=60,
 )
-def fetch_and_process_news(self, limit: int = 20) -> Dict[str, Any]:
+def fetch_and_process_news(
+    self, limit: int = 20, market_phase: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Fetch news from all sources, deduplicate, and process.
     
@@ -56,14 +58,16 @@ def fetch_and_process_news(self, limit: int = 20) -> Dict[str, Any]:
     
     Args:
         limit: Number of items per news type to fetch
+        market_phase: Optional phase (pre/mid/post) to fetch phase-specific news only.
+            If not provided, fetches from all sources.
         
     Returns:
         Dict with processing statistics
     """
-    logger.info(f"fetch_and_process_news_started: limit={limit}")
+    logger.info(f"fetch_and_process_news_started: limit={limit}, market_phase={market_phase}")
     
     try:
-        result = run_async(_fetch_and_process_news_async(limit))
+        result = run_async(_fetch_and_process_news_async(limit, market_phase))
         logger.info(f"fetch_and_process_news_completed: {result}")
         return result
         
@@ -74,12 +78,15 @@ def fetch_and_process_news(self, limit: int = 20) -> Dict[str, Any]:
         raise self.retry(exc=exc)
 
 
-async def _fetch_and_process_news_async(limit: int) -> Dict[str, Any]:
+async def _fetch_and_process_news_async(
+    limit: int, market_phase: Optional[str] = None
+) -> Dict[str, Any]:
     """Async implementation of news fetching and processing."""
     from app.db.mongodb import get_mongodb_client
     from app.db.repositories.news_repository import get_news_repository
     from app.db.models.news_document import NewsArticleDocument
     from app.services.cmots_news_service import get_cmots_news_service
+    from app.services.market_intelligence_service import get_market_phase
     
     # Connect to MongoDB
     mongo_client = get_mongodb_client()
@@ -96,21 +103,27 @@ async def _fetch_and_process_news_async(limit: int) -> Dict[str, Any]:
         "errors": 0,
     }
     
+    # Use provided market_phase or calculate from current time
+    if not market_phase:
+        phase_data = await get_market_phase()
+        market_phase = phase_data["phase"]
+    
     try:
-        # Fetch from all news sources
+        # Fetch from all sources or phase-specific (market_phase: pre/mid/post)
         response = await news_service.fetch_unified_market_news(
             limit=limit,
             page=1,
-            per_page=limit * 6,  # 6 news types
+            per_page=limit,
+            market_phase=market_phase,
         )
         
         data_by_type = response.get("data", {})
         
         # Collect all news items
         all_items = []
-        for news_type, items in data_by_type.items():
+        for type_key, items in data_by_type.items():
             for item in items:
-                item["_news_type"] = news_type
+                item["_news_type"] = type_key
                 all_items.append(item)
         
         stats["fetched"] = len(all_items)

@@ -250,14 +250,14 @@ async def get_all_market_news(
     Query Parameters:
     - page: Page number (1-indexed, default: 1)
     - per_page: Items per page (1-100, default: 10)
-    - type: Filter by news type (economy-news, other-markets, foreign-markets, mid-market) - optional
+    - type: Filter by source: economy-news, other-markets, foreign-markets, or market_phase (pre, mid, post) - optional
 
     Response includes:
-    - data: News organized by type (economy-news, other-markets, foreign-markets, mid-market)
+    - data: News organized by source (economy-news, other-markets, foreign-markets, pre, mid, post)
     - pagination: Pagination metadata
     - errors: Any errors encountered during fetch
     """
-    logger.info("all_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch, news_type=type)
+    logger.info("all_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch, type=type)
 
     try:
         news_service = get_cmots_news_service()
@@ -265,7 +265,7 @@ async def get_all_market_news(
             limit=records_to_fetch,
             page=page,
             per_page=per_page,
-            news_type=type,
+            market_phase=type,
         )
         return response
     except Exception as e:
@@ -367,7 +367,7 @@ async def get_mid_market_news(
     try:
         news_service = get_cmots_news_service()
         response = await news_service.fetch_news_by_type(
-            news_type="mid-market",
+            news_type="mid",
             limit=records_to_fetch,
             page=page,
             per_page=per_page,
@@ -415,7 +415,7 @@ async def get_pre_market_news(
     try:
         news_service = get_cmots_news_service()
         response = await news_service.fetch_news_by_type(
-            news_type="pre-market",
+            news_type="pre",
             limit=records_to_fetch,
             page=page,
             per_page=per_page,
@@ -463,7 +463,7 @@ async def get_post_market_news(
     try:
         news_service = get_cmots_news_service()
         response = await news_service.fetch_news_by_type(
-            news_type="post-market",
+            news_type="post",
             limit=records_to_fetch,
             page=page,
             per_page=per_page,
@@ -591,7 +591,7 @@ async def get_market_summary(
     - Indices data
     - Market summary bullets with causal language
     - Executive summary
-    - Trending news (mid-market) or themed news (pre/post)
+    - Trending news (mid-market, top impacting). Themed sectors (sector, relevant companies, sentiment) when identified
 
     Query Parameters:
     - phase: Optional market phase filter (pre/mid/post)
@@ -651,8 +651,23 @@ async def get_market_summary(
                     "indices_data": [],
                     "market_summary": [],
                     "executive_summary": None,
+                    "trending_now": None,
+                    "themed": [],
                     "all_news": [],
                 }
+
+        def _news_to_dict(n):
+            return {
+                "news_id": n.news_id,
+                "headline": n.headline,
+                "summary": n.summary,
+                "source": n.source,
+                "published_at": n.published_at.isoformat(),
+                "sentiment": n.sentiment,
+                "mentioned_stocks": n.mentioned_stocks,
+                "mentioned_sectors": n.mentioned_sectors,
+                "is_breaking": n.is_breaking,
+            }
 
         # Build response
         response = {
@@ -663,30 +678,26 @@ async def get_market_summary(
             "indices_data": [idx.model_dump() for idx in snapshot.indices_data],
             "market_summary": [ms.model_dump() for ms in snapshot.market_summary],
             "executive_summary": snapshot.executive_summary,
-            "trending_now": snapshot.trending_now if snapshot.market_phase == "mid" else None,
+            "trending_now": None,
+            "themed": [t.model_dump() for t in (snapshot.themed or [])],
             "all_news_ids": snapshot.all_news_ids[:news_limit],
             "degraded_mode": snapshot.degraded_mode,
             "warnings": snapshot.warnings,
         }
 
-        # Optionally include full news details
+        # Trending now: full news objects (same shape as all_news), mid-market only
+        if snapshot.market_phase == "mid":
+            if snapshot.trending_now:
+                trending_docs = await news_repo.get_by_ids(snapshot.trending_now)
+                response["trending_now"] = [_news_to_dict(n) for n in trending_docs]
+            else:
+                response["trending_now"] = []
+
+        # Optionally include full news details for all_news
         if include_news_details and snapshot.all_news_ids:
             news_ids = snapshot.all_news_ids[:min(news_limit, 50)]
             news_docs = await news_repo.get_by_ids(news_ids)
-            response["all_news"] = [
-                {
-                    "news_id": n.news_id,
-                    "headline": n.headline,
-                    "summary": n.summary,
-                    "source": n.source,
-                    "published_at": n.published_at.isoformat(),
-                    "sentiment": n.sentiment,
-                    "mentioned_stocks": n.mentioned_stocks,
-                    "mentioned_sectors": n.mentioned_sectors,
-                    "is_breaking": n.is_breaking,
-                }
-                for n in news_docs
-            ]
+            response["all_news"] = [_news_to_dict(n) for n in news_docs]
 
         return response
 
@@ -766,6 +777,7 @@ async def trigger_data_population(
     fetch_news: bool = True,
     fetch_indices: bool = True,
     generate_snapshot: bool = True,
+    market_phase: Optional[str] = None,
 ):
     """
     Manually trigger data population tasks asynchronously.
@@ -774,6 +786,7 @@ async def trigger_data_population(
     - fetch_news: Trigger news fetch (default: true)
     - fetch_indices: Trigger indices fetch (default: true)
     - generate_snapshot: Trigger snapshot generation (default: true)
+    - market_phase: Market phase (pre/mid/post) for snapshot generation. If not provided, auto-detected.
 
     Returns:
     - Task IDs for triggered tasks
@@ -783,6 +796,7 @@ async def trigger_data_population(
         fetch_news=fetch_news,
         fetch_indices=fetch_indices,
         generate_snapshot=generate_snapshot,
+        market_phase=market_phase,
     )
 
     try:
@@ -790,8 +804,8 @@ async def trigger_data_population(
 
         if fetch_news:
             from app.celery_app.tasks.news_tasks import fetch_and_process_news
-            task = fetch_and_process_news.delay(limit=20)
-            tasks["news_fetch"] = {"task_id": task.id, "status": "queued"}
+            task = fetch_and_process_news.delay(limit=20, market_phase=market_phase)
+            tasks["news_fetch"] = {"task_id": task.id, "status": "queued", "market_phase": market_phase}
 
         if fetch_indices:
             from app.celery_app.tasks.indices_tasks import fetch_indices_data
@@ -800,8 +814,8 @@ async def trigger_data_population(
 
         if generate_snapshot:
             from app.celery_app.tasks.snapshot_tasks import generate_market_snapshot
-            task = generate_market_snapshot.delay(force=True)
-            tasks["snapshot_generation"] = {"task_id": task.id, "status": "queued"}
+            task = generate_market_snapshot.delay(force=True, market_phase=market_phase)
+            tasks["snapshot_generation"] = {"task_id": task.id, "status": "queued", "market_phase": market_phase}
 
         return {
             "status": "tasks_queued",
