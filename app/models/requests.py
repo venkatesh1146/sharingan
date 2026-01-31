@@ -2,7 +2,7 @@
 API Request Models for Market Intelligence API endpoints.
 """
 
-from typing import Optional
+from typing import Optional, List
 
 from pydantic import BaseModel, Field
 
@@ -26,4 +26,29 @@ class AgentStatusRequest(BaseModel):
     include_metrics: bool = Field(
         default=True,
         description="Include performance metrics",
+    )
+
+
+class NewsSearchRequest(BaseModel):
+    """Request model for searching news by stocks and/or companies."""
+
+    mentioned_stocks: Optional[List[str]] = Field(
+        default=None,
+        description="List of stock tickers to search for (e.g., ['RELIANCE', 'TCS'])",
+    )
+    mentioned_companies: Optional[List[str]] = Field(
+        default=None,
+        description="List of company names to search for",
+    )
+    hours: int = Field(
+        default=24,
+        description="How many hours back to search (default: 24)",
+        ge=1,
+        le=730,
+    )
+    limit: int = Field(
+        default=50,
+        description="Maximum number of news articles to return (default: 50)",
+        ge=1,
+        le=500,
     )

@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.config import get_settings
+from app.models.requests import NewsSearchRequest
 from app.models.responses import (
     HealthCheckResponse,
     AgentStatusResponse,
@@ -42,19 +43,19 @@ async def _trigger_startup_tasks():
     """Trigger initial data population tasks after a delay."""
     import asyncio
     await asyncio.sleep(5)  # Wait for Celery worker to be ready
-    
+
     try:
         from app.celery_app.tasks.news_tasks import fetch_and_process_news
         from app.celery_app.tasks.snapshot_tasks import generate_market_snapshot
         from app.celery_app.tasks.indices_tasks import fetch_indices_data
-        
+
         logger.info("startup_triggering_initial_data_population")
-        
+
         # Queue all initial tasks
         fetch_and_process_news.delay(limit=20)
         fetch_indices_data.delay()
         generate_market_snapshot.delay(force=True)
-        
+
         logger.info("startup_initial_data_tasks_queued")
     except Exception as e:
         logger.warning("startup_data_population_failed", error=str(e))
@@ -407,7 +408,7 @@ async def get_pre_market_news(
     Response includes:
     - data: Array of pre-session news items for this page
     - pagination: Pagination metadata (page, total_pages, has_next, etc.)
-    
+
     Note: Pre-market news is cached with 24-hour TTL.
     """
     logger.info("pre_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch)
@@ -455,7 +456,7 @@ async def get_post_market_news(
     Response includes:
     - data: Array of end-session news items for this page
     - pagination: Pagination metadata (page, total_pages, has_next, etc.)
-    
+
     Note: Post-market news is cached with 24-hour TTL.
     """
     logger.info("post_market_news_request", page=page, per_page=per_page, records_to_fetch=records_to_fetch)
@@ -537,6 +538,109 @@ async def get_company_wise_news(
         )
 
 
+@app.post(
+    "/api/v1/search-news",
+    summary="Search News by Stocks and/or Companies",
+    description="Search news database by stock tickers and/or company names",
+)
+async def search_news(
+    search_request: NewsSearchRequest,
+):
+    """
+    Search news articles by stock tickers and/or company names.
+
+    This endpoint searches the news database for articles mentioning
+    any of the provided stock tickers OR company names.
+
+    Request Body:
+    - mentioned_stocks: List of stock tickers (e.g., ["RELIANCE", "TCS"]) [optional]
+    - mentioned_companies: List of company names (e.g., ["Apple", "Google"]) [optional]
+    - hours: How many hours back to search (1-730, default: 24)
+    - limit: Maximum articles to return (1-500, default: 50)
+
+    At least one of mentioned_stocks or mentioned_companies must be provided.
+
+    Response:
+    - data: List of matching news articles with details
+    - total_found: Total number of articles found
+    - filters_applied: Summary of filters used
+    - query_timestamp: When the query was executed
+    """
+    from app.db.repositories.news_repository import get_news_repository
+
+    logger.info(
+        "search_news_request",
+        mentioned_stocks=search_request.mentioned_stocks,
+        mentioned_companies=search_request.mentioned_companies,
+        hours=search_request.hours,
+        limit=search_request.limit,
+    )
+
+    try:
+        news_repo = get_news_repository()
+
+        # Search the database
+        articles = await news_repo.search_by_stocks_and_companies(
+            stocks=search_request.mentioned_stocks,
+            companies=search_request.mentioned_companies,
+            hours=search_request.hours,
+            limit=search_request.limit,
+        )
+
+        # Format response with summary/full_text handling
+        formatted_data = []
+        for article in articles:
+            article_dict = article.model_dump()
+
+            # If summary is empty, use full_text as summary
+            if not article_dict.get("summary") or article_dict["summary"] == "":
+                article_dict["summary"] = article_dict.get("full_text", "")
+
+            # Remove full_text from response
+            article_dict.pop("full_text", None)
+
+            formatted_data.append(article_dict)
+
+        # Format response
+        response = {
+            "data": formatted_data,
+            "total_found": len(articles),
+            "filters_applied": {
+                "stocks": search_request.mentioned_stocks,
+                "companies": search_request.mentioned_companies,
+                "hours": search_request.hours,
+                "limit": search_request.limit,
+            },
+            "query_timestamp": datetime.utcnow().isoformat(),
+        }
+
+        logger.info(
+            "search_news_success",
+            total_found=len(articles),
+        )
+
+        return response
+
+    except ValueError as e:
+        logger.error("search_news_validation_error", error=str(e))
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "INVALID_SEARCH_CRITERIA",
+                "message": str(e),
+            },
+        )
+    except Exception as e:
+        logger.error("search_news_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "SEARCH_NEWS_ERROR",
+                "message": str(e),
+            },
+        )
+
+
 @app.get(
     "/api/v1/world-indices",
     summary="World Indices",
@@ -601,7 +705,7 @@ async def get_market_summary(
     Response time target: < 200ms (with caching)
     """
     from datetime import datetime
-    
+
     logger.info(
         "market_summary_request",
         phase=phase,
@@ -636,12 +740,12 @@ async def get_market_summary(
         if not snapshot:
             # No valid snapshot, try to get any latest
             snapshot = await snapshot_repo.get_latest(phase)
-            
+
             if not snapshot:
                 # No snapshot at all, trigger generation and return basic response
                 from app.celery_app.tasks.snapshot_tasks import generate_market_snapshot
                 generate_market_snapshot.delay(market_phase=phase, force=True)
-                
+
                 return {
                     "generated_at": datetime.utcnow().isoformat(),
                     "market_phase": phase,
@@ -987,7 +1091,7 @@ async def get_database_stats():
         from app.db.mongodb import get_mongodb_client
 
         mongo_client = get_mongodb_client()
-        
+
         # Check if MongoDB is healthy
         is_healthy = await mongo_client.health_check()
         if not is_healthy:
