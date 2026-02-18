@@ -15,6 +15,7 @@ import json
 from pydantic import BaseModel, Field, field_validator
 
 from app.config import get_settings
+from app.constants.themes import ALLOWED_THEMES
 from app.db.models.news_document import NewsArticleDocument
 from app.utils.logging import get_logger
 from app.utils.vertex_ai_client import VertexAIClient
@@ -342,7 +343,7 @@ class SnapshotGeneratorService:
         if market_phase == "mid":
             result["trending_now"] = self._select_trending_by_impact(news_items)
             if not result.get("executive_summary"):
-                result["executive_summary"] = "Market activity ongoing. Key developments being monitored."
+                result["executive_summary"] = "Market activity ongoing."
         
         return result
 
@@ -448,6 +449,8 @@ class SnapshotGeneratorService:
         previous_context = ""
         if previous_snapshot:
             previous_context = self._format_previous_snapshot_context(previous_snapshot)
+
+        allowed_themes_list = ", ".join(f'"{t}"' for t in ALLOWED_THEMES)
         
         return f"""You are a Market Intelligence Agent specializing in Indian equity markets.
 Your role is to gather, analyze, and STRUCTURE market intelligence.
@@ -506,12 +509,12 @@ Return ONLY a valid JSON object with the following structure. No other text.
 
 3. "executive_summary": A 2-3 sentence internal overview of the market (structured intelligence, not user-facing copy).
 
-4. "themed": Array of impacted themes/sectors (ALWAYS include when relevant). Each item:
-   - "sector": Theme or sector name (e.g. "Banking", "IT", "Auto")
+4. "themed": MANDATORY. Always generate themed items from the news and indices. Each item:
+   - "sector": Use ONLY one of these allowed theme names: {allowed_themes_list}
    - "relevant_companies": List of company names or tickers mentioned for this theme
    - "sentiment": "bullish" | "bearish" | "neutral"
    - "sentiment_score": Optional number 0.0-1.0 (strength of sentiment; omit if unknown)
-   Include 0-10 themed items based on news and indices. Omit "themed" or use [] if none identified.
+   Include 1-5 themed items. Map each relevant news topic/sector to an allowed theme above. Never omit "themed"; always return at least one item when news is provided.
 
 Return ONLY valid JSON, no other text."""
 
@@ -712,7 +715,6 @@ Return ONLY valid JSON, no other text."""
         # Executive summary
         result["executive_summary"] = (
             f"Markets trading {direction} with NIFTY at {nifty_change:.1f}%. "
-            "Key developments being monitored."
         )
 
         result["themed"] = []
@@ -796,7 +798,7 @@ Return only the summary text, no JSON or formatting."""
         elif nifty_change < 0:
             return f"Markets under pressure with NIFTY down {abs(nifty_change):.1f}%."
         else:
-            return "Markets trading flat. Key developments being monitored."
+            return "Markets trading flat."
 
 
 # Singleton instance

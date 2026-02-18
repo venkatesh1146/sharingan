@@ -121,19 +121,19 @@ class NewsProcessorService:
         """Build the analysis prompt for Gemini."""
         return f"""Analyze this financial news article and provide structured analysis.
 
-Headline: {article.headline}
-Summary: {article.summary or article.full_text or 'No summary available'}
-Source: {article.source}
+            Headline: {article.headline}
+            Summary: {article.summary or article.full_text or 'No summary available'}
+            Source: {article.source}
 
-Analyze and return a JSON object with:
-1. "sentiment": One of "bullish", "bearish", or "neutral"
-2. "sentiment_score": A score from -1.0 (very bearish) to 1.0 (very bullish)
-3. "summary": A concise 1-2 sentence summary (max 100 words)
-4. "mentioned_stocks": List of NSE stock tickers mentioned (e.g., ["RELIANCE", "TCS"])
-5. "mentioned_sectors": List of sectors affected (e.g., ["Banking", "IT", "Economy"])
-6. "impacted_stocks": List of objects with {{"ticker": "XXX", "impact_type": "positive/negative/neutral", "reasoning": "why"}}
-7. "sector_impacts": Object mapping sector to impact type (e.g., {{"Banking": "positive"}})
-8. "causal_chain": A brief explanation of the impact chain (e.g., "Oil prices ↑ → Paints costs ↑ → Asian Paints margins ↓")
+            Analyze and return a JSON object with:
+            1. "sentiment": One of "bullish", "bearish", or "neutral"
+            2. "sentiment_score": A score from -1.0 (very bearish) to 1.0 (very bullish)
+            3. "summary": A concise 1-2 sentence summary (max 100 words)
+            4. "mentioned_stocks": List of NSE stock tickers mentioned (e.g., ["RELIANCE", "TCS"])
+            5. "mentioned_sectors": List of sectors affected (e.g., ["Banking", "IT", "Economy"])
+            6. "impacted_stocks": List of objects with {{"ticker": "XXX", "impact_type": "positive/negative/neutral", "reasoning": "why"}}
+            7. "sector_impacts": Object mapping sector to impact type (e.g., {{"Banking": "positive"}})
+            8. "causal_chain": A brief explanation of the impact chain (e.g., "Oil prices ↑ → Paints costs ↑ → Asian Paints margins ↓")
 
 Focus on Indian market context. Return ONLY valid JSON, no other text."""
 
